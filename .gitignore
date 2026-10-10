@@ -1,0 +1,14 @@
+# Build output (includes FetchContent downloads in build/_deps)
+build/
+build-*/
+compile_commands.json
+
+# Editors and tools
+.vscode/
+.idea/
+.cache/
+*.swp
+
+# Data never lives in the repo (see ~/data)
+*.bag
+*.db3
