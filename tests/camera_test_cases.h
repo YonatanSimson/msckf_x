@@ -4,6 +4,7 @@
 #include "msckf/camera/double_sphere.h"
 #include "msckf/camera/eucm.h"
 #include "msckf/camera/kannala_brandt.h"
+#include "msckf/camera/omni_radtan.h"
 #include "msckf/camera/pinhole_radtan.h"
 
 #include <functional>
@@ -29,6 +30,9 @@ inline Eigen::VectorXd vec(std::initializer_list<double> v) {
 // EuRoC cam0 and TUM-VI cam0 calibrations as published (values quoted from
 // memory; the gates here only need realistic parameters). The EUCM and the
 // alpha < 0.5 cases are synthetic, to exercise the other validity branch.
+// TumviOmniRadtan is TUM-VI cam0's published omni-radtan calibration (xi > 1);
+// OmniRadtanXiBelowOne is synthetic, for the xi <= 1 branch. The two
+// undistorted omni cases are the ones Basalt's UCM can cross-check.
 inline std::vector<CameraCase> cameraCases() {
   return {
       {"EurocRadtan",
@@ -75,6 +79,33 @@ inline std::vector<CameraCase> cameraCases() {
        true},
       {"EucmAlphaBelowHalf",
        [] { return std::make_shared<Eucm>(640, 480, vec({300.0, 300.0, 320.0, 240.0, 0.4, 1.2})); },
+       false},
+      {"TumviOmniRadtan",
+       [] {
+         return std::make_shared<OmniRadtan>(
+             512, 512,
+             vec({533.340727445877, 533.2556495307942, 254.64689387916482, 256.4835490935692,
+                  1.792187901303534, -0.05972430882700243, 0.17468739202093328,
+                  0.000737218969875311, 0.000574074894976456}));
+       },
+       true},
+      {"OmniRadtanXiBelowOne",
+       [] {
+         return std::make_shared<OmniRadtan>(
+             640, 480, vec({500.0, 501.0, 321.0, 239.0, 0.8, -0.1, 0.05, 1e-3, -5e-4}));
+       },
+       false},
+      {"OmniNoDistortionXiAboveOne",
+       [] {
+         return std::make_shared<OmniRadtan>(
+             512, 512, vec({533.3, 533.2, 254.6, 256.5, 1.79, 0.0, 0.0, 0.0, 0.0}));
+       },
+       true},
+      {"OmniNoDistortionXiBelowOne",
+       [] {
+         return std::make_shared<OmniRadtan>(
+             640, 480, vec({500.0, 501.0, 321.0, 239.0, 0.8, 0.0, 0.0, 0.0, 0.0}));
+       },
        false},
   };
 }

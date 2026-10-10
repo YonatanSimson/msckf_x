@@ -34,3 +34,44 @@ if(MSCKF_BUILD_TESTS)
   target_include_directories(basalt_headers SYSTEM INTERFACE ${basalt_headers_SOURCE_DIR}/include)
   target_link_libraries(basalt_headers INTERFACE Eigen3::Eigen sophus)
 endif()
+
+# --- Calibration tools (msckf_calib): OpenCV, apriltag, yaml-cpp -------------
+
+find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs calib3d highgui)
+
+# apriltag (BSD-2). Its own CMake forces shared libs, examples and install
+# rules, so build a static target from the sources we need.
+FetchContent_Declare(apriltag
+  URL https://github.com/AprilRobotics/apriltag/archive/refs/tags/v3.4.2.tar.gz
+  URL_HASH SHA256=7e021bab89f136aa3cf736f772a635aaa353f93f6f8859495f4bd8c519be4805
+  SOURCE_SUBDIR do-not-add
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(apriltag)
+enable_language(C)
+find_package(Threads REQUIRED)
+file(GLOB APRILTAG_COMMON_SRC ${apriltag_SOURCE_DIR}/common/*.c)
+add_library(apriltag STATIC
+  ${apriltag_SOURCE_DIR}/apriltag.c
+  ${apriltag_SOURCE_DIR}/apriltag_quad_thresh.c
+  ${apriltag_SOURCE_DIR}/tag36h11.c
+  ${APRILTAG_COMMON_SRC})
+set_target_properties(apriltag PROPERTIES C_STANDARD 99 POSITION_INDEPENDENT_CODE ON)
+target_compile_options(apriltag PRIVATE -w)
+target_include_directories(apriltag SYSTEM PUBLIC ${apriltag_SOURCE_DIR})
+target_link_libraries(apriltag PUBLIC Threads::Threads m)
+
+# yaml-cpp (MIT). 0.8.0 declares cmake_minimum_required(3.4), which CMake 4
+# rejects without a policy floor.
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_FORMAT_SOURCE OFF CACHE BOOL "" FORCE)
+set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(yaml-cpp
+  URL https://github.com/jbeder/yaml-cpp/archive/refs/tags/0.8.0.tar.gz
+  URL_HASH SHA256=fbe74bbdcee21d656715688706da3c8becfd946d92cd44705cc6098bb23b3a16
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(yaml-cpp)
+unset(CMAKE_POLICY_VERSION_MINIMUM)

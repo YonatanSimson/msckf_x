@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "msckf-tools"
+version = "0.1.0"
+description = "Analysis and display scripts for msckf_x"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "opencv-python>=4.7",  # GUI build (Qt) so viz.py can open windows; needs cv2.aruco.ArucoDetector
+  "matplotlib>=3.7",
+]
+
+[project.scripts]
+play-euroc = "play_euroc:main"
+
+[tool.setuptools]
+py-modules = ["viz", "play_euroc"]

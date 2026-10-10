@@ -15,3 +15,10 @@ compile_commands.json
 
 # Evaluation output (msckf_eval default)
 eval_out/
+
+# Python script output and caches
+viz_out/
+__pycache__/
+calib_out/
+
+*.egg-info/

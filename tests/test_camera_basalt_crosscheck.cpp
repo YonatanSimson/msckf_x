@@ -14,7 +14,9 @@
 #include <basalt/camera/extended_camera.hpp>
 #include <basalt/camera/kannala_brandt_camera4.hpp>
 #include <basalt/camera/pinhole_radtan8_camera.hpp>
+#include <basalt/camera/unified_camera.hpp>
 
+#include <optional>
 #include <random>
 
 namespace msckf {
@@ -51,7 +53,43 @@ BasaltReference wrap(const BasaltCam& cam, int our_num_params) {
   return ref;
 }
 
-BasaltReference makeReference(const CameraModel& cam) {
+// Mei's unified model without distortion is Basalt's UCM with
+// alpha = xi / (1 + xi) and f_ucm = f / (1 + xi). Converts Basalt's parameter
+// Jacobian back to ours by the chain rule; the radtan columns (which Basalt
+// does not model) are the textbook derivatives at zero distortion,
+// d(md)/dk evaluated at m = (uv - c) / f.
+BasaltReference wrapUnified(const Eigen::VectorXd& k) {
+  const double fx = k[0], fy = k[1], cx = k[2], cy = k[3], xi = k[4], s = 1.0 + xi;
+  Eigen::Matrix<double, 5, 1> p;
+  p << fx / s, fy / s, cx, cy, xi / s;
+  const basalt::UnifiedCamera<double> cam(p);
+  BasaltReference ref = wrap(cam, 5);
+  ref.project = [cam, fx, fy, cx, cy, s](const Eigen::Vector3d& pt, Eigen::Vector2d& uv,
+                                        Matrix23d* J_point, Matrix2Xd* J_params) {
+    Matrix23d Jp;
+    basalt::UnifiedCamera<double>::Mat2N Jk;
+    const bool ok = cam.project(pt, uv, &Jp, &Jk);
+    if (J_point) *J_point = Jp;
+    if (J_params) {
+      J_params->setZero(2, 9);
+      J_params->col(0) = Jk.col(0) / s;
+      J_params->col(1) = Jk.col(1) / s;
+      J_params->col(2) = Jk.col(2);
+      J_params->col(3) = Jk.col(3);
+      J_params->col(4) = (-fx * Jk.col(0) - fy * Jk.col(1) + Jk.col(4)) / (s * s);
+      const double x = (uv.x() - cx) / fx, y = (uv.y() - cy) / fy;
+      const double r2 = x * x + y * y;
+      J_params->block<1, 4>(0, 5) << fx * x * r2, fx * x * r2 * r2, fx * 2.0 * x * y,
+          fx * (r2 + 2.0 * x * x);
+      J_params->block<1, 4>(1, 5) << fy * y * r2, fy * y * r2 * r2, fy * (r2 + 2.0 * y * y),
+          fy * 2.0 * x * y;
+    }
+    return ok;
+  };
+  return ref;
+}
+
+std::optional<BasaltReference> makeReference(const CameraModel& cam) {
   const Eigen::VectorXd k = cam.params();
   const int n = cam.numParams();
   if (cam.name() == "pinhole-radtan") {
@@ -68,6 +106,10 @@ BasaltReference makeReference(const CameraModel& cam) {
   if (cam.name() == "eucm") {
     return wrap(basalt::ExtendedUnifiedCamera<double>(k), n);
   }
+  if (cam.name() == "omni-radtan") {
+    if (!k.tail<4>().isZero()) return std::nullopt;  // Basalt has no distorted UCM
+    return wrapUnified(k);
+  }
   throw std::invalid_argument("no Basalt reference for " + cam.name());
 }
 
@@ -75,7 +117,9 @@ class BasaltCrossCheckTest : public ::testing::TestWithParam<CameraCase> {
  protected:
   void SetUp() override {
     cam_ = GetParam().make();
-    ref_ = makeReference(*cam_);
+    const auto ref = makeReference(*cam_);
+    if (!ref) GTEST_SKIP() << "no Basalt reference for " << cam_->name() << " with these parameters";
+    ref_ = *ref;
   }
   CameraModelPtr cam_;
   BasaltReference ref_;

@@ -20,6 +20,7 @@ add_library(msckf
   src/camera/kannala_brandt.cpp
   src/camera/double_sphere.cpp
   src/camera/eucm.cpp
+  src/camera/omni_radtan.cpp
   src/eval/alignment.cpp
   src/eval/metrics.cpp
   src/eval/nees.cpp
@@ -37,6 +38,20 @@ target_compile_options(msckf PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(msckf_eval tools/msckf_eval.cpp)
 target_link_libraries(msckf_eval PRIVATE msckf)
+
+# Calibration tools: AprilGrid detection, Kalibr I/O, per-image board fits.
+# Kept out of msckf so the estimator core does not depend on OpenCV.
+add_library(msckf_calib
+  src/calib/aprilgrid.cpp
+  src/calib/board_pose.cpp
+  src/calib/kalibr_io.cpp
+)
+target_link_libraries(msckf_calib PUBLIC msckf ${OpenCV_LIBS} PRIVATE apriltag yaml-cpp::yaml-cpp)
+target_include_directories(msckf_calib SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})
+target_compile_options(msckf_calib PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(calib_reproj tools/calib_reproj.cpp)
+target_link_libraries(calib_reproj PRIVATE msckf_calib)
 
 if(MSCKF_BUILD_TESTS)
   enable_testing()

@@ -4,6 +4,10 @@
 
 namespace msckf {
 
+namespace internal {
+struct RadtanDistortion;
+}  // namespace internal
+
 // Pinhole with Brown-Conrady (radial-tangential) distortion.
 // Parameters: fx fy cx cy k1 k2 p1 p2 k3.
 class PinholeRadtan final : public CameraModel {
@@ -26,8 +30,7 @@ class PinholeRadtan final : public CameraModel {
   double maxRadius() const { return r_max_; }
 
  private:
-  // Distorts normalized coordinates; J is d(distorted)/d(undistorted).
-  Eigen::Vector2d distort(const Eigen::Vector2d& xn, Eigen::Matrix2d* J = nullptr) const;
+  internal::RadtanDistortion distortion() const;
   void updateMaxRadius();
 
   Eigen::Matrix<double, kNumParams, 1> params_;
