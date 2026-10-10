@@ -9,6 +9,7 @@ endfunction()
 msckf_add_test(test_conventions)
 msckf_add_test(test_camera_models)
 msckf_add_test(test_simulator)
+msckf_add_test(test_eval)
 
 msckf_add_test(test_camera_basalt_crosscheck)
 target_link_libraries(test_camera_basalt_crosscheck PRIVATE basalt_headers)

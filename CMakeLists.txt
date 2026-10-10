@@ -20,6 +20,12 @@ add_library(msckf
   src/camera/kannala_brandt.cpp
   src/camera/double_sphere.cpp
   src/camera/eucm.cpp
+  src/eval/alignment.cpp
+  src/eval/metrics.cpp
+  src/eval/nees.cpp
+  src/eval/report.cpp
+  src/eval/timing.cpp
+  src/eval/trajectory.cpp
   src/imu/propagation.cpp
   src/sim/scenarios.cpp
   src/sim/simulator.cpp
@@ -28,6 +34,9 @@ add_library(msckf
 target_include_directories(msckf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(msckf PUBLIC Eigen3::Eigen sophus)
 target_compile_options(msckf PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(msckf_eval tools/msckf_eval.cpp)
+target_link_libraries(msckf_eval PRIVATE msckf)
 
 if(MSCKF_BUILD_TESTS)
   enable_testing()

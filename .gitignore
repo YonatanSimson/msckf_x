@@ -12,3 +12,6 @@ compile_commands.json
 # Data never lives in the repo (see ~/data)
 *.bag
 *.db3
+
+# Evaluation output (msckf_eval default)
+eval_out/
