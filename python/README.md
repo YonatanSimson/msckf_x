@@ -12,5 +12,6 @@ Example: `DISPLAY=:0 play-euroc ~/data/tumvi/dataset-calib-cam1_512_16 --aprilgr
 |---|---|
 | `viz.py` | `FrameSink`: shows frames in a window when OpenCV has a GUI. Otherwise it writes `viz_out/<name>.mp4` and opens it in the Windows player (WSL). |
 | `play_euroc.py` | Plays a EuRoC/TUM-VI sequence with all cameras side by side. `--aprilgrid` overlays Kalibr AprilGrid tag detections. |
+| `msckf_gates/` | Gate checkers (`gate-stage0-reprojection`, `gate-stage1a-static-init`, or `python -m msckf_gates.<gate>`). Each one runs the C++ tools, recomputes the gate metrics from their CSV output, and writes `gate_out/<gate>/report.md`. Run them all with `scripts/run_gates.sh`. |
 
-AprilGrid detection uses OpenCV aruco's `DICT_APRILTAG_36h11` with `markerBorderBits = 2`, because Kalibr grids print a 2-bit black border.
+`play_euroc.py --aprilgrid` uses OpenCV aruco (`DICT_APRILTAG_36h11`, `markerBorderBits = 2`) only as a quick visual. It misses many tags, because each tag's border touches the grid's corner squares. The measurement detector is the C++ one in `msckf_calib`.

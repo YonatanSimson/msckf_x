@@ -21,4 +21,7 @@ viz_out/
 __pycache__/
 calib_out/
 
+# Gate checker output (python/msckf_gates)
+gate_out/
+
 *.egg-info/

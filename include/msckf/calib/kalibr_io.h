@@ -1,6 +1,7 @@
 #pragma once
 
 #include "msckf/camera/camera_model.h"
+#include "msckf/imu/imu_types.h"
 
 #include <Eigen/Core>
 
@@ -29,5 +30,8 @@ CameraModelPtr makeKalibrCamera(const std::string& camera_model, const std::stri
                                 const std::vector<double>& distortion, int width, int height);
 
 std::vector<KalibrCamera> loadKalibrCamchain(const std::string& path);
+
+// Noise densities from a Kalibr imu.yaml (accelerometer_noise_density, ...).
+ImuNoise loadKalibrImu(const std::string& path);
 
 }  // namespace msckf::calib

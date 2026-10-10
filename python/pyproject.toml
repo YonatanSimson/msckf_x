@@ -11,10 +11,14 @@ dependencies = [
   "numpy>=1.24",
   "opencv-python>=4.7",  # GUI build (Qt) so viz.py can open windows; needs cv2.aruco.ArucoDetector
   "matplotlib>=3.7",
+  "pyyaml>=6",
 ]
 
 [project.scripts]
 play-euroc = "play_euroc:main"
+gate-stage0-reprojection = "msckf_gates.stage0_reprojection:main"
+gate-stage1a-static-init = "msckf_gates.stage1a_static_init:main"
 
 [tool.setuptools]
 py-modules = ["viz", "play_euroc"]
+packages = ["msckf_gates"]

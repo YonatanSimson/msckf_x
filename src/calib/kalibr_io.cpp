@@ -91,4 +91,14 @@ std::vector<KalibrCamera> loadKalibrCamchain(const std::string& path) {
   return cams;
 }
 
+ImuNoise loadKalibrImu(const std::string& path) {
+  const YAML::Node n = YAML::LoadFile(path);
+  ImuNoise noise;
+  noise.acc_noise = n["accelerometer_noise_density"].as<double>();
+  noise.acc_bias_walk = n["accelerometer_random_walk"].as<double>();
+  noise.gyro_noise = n["gyroscope_noise_density"].as<double>();
+  noise.gyro_bias_walk = n["gyroscope_random_walk"].as<double>();
+  return noise;
+}
+
 }  // namespace msckf::calib

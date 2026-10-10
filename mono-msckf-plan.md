@@ -11,7 +11,8 @@ Updated as work progresses. Decisions that changed a section below are recorded 
 | 2026-10-10 | 0 | Build skeleton (CMake, FetchContent for Sophus/GoogleTest), conventions tests, four camera models | a05b88b |
 | 2026-10-10 | 0 | Basalt cross-check, simulator, RK4 nominal propagation | 2f44cf0 |
 | 2026-10-10 | 0 | Evaluation harness (`msckf_eval`) | 3ee5177 |
-| 2026-10-10 | 0 | Omni-radtan model (shared radtan code), AprilGrid detector and `calib_reproj` (`msckf_calib`), TUM-VI reprojection gate, `python/` tools. Stage 0 complete | (pending) |
+| 2026-10-10 | 0 | Omni-radtan model (shared radtan code), AprilGrid detector and `calib_reproj` (`msckf_calib`), TUM-VI reprojection gate, `python/` tools. Stage 0 complete | b1883a8 |
+| 2026-10-10 | 1a | Static initialization, `static_init_eval`, EuRoC IMU reader; gate scripts (`scripts/`, `python/msckf_gates/`) | (pending) |
 
 Stage 0 gate status:
 
@@ -20,10 +21,25 @@ Stage 0 gate status:
 | Camera round trip, every pixel | < 1e-6 px | ≤ 2e-12 px, all models |
 | Camera Jacobians vs finite differences | < 1e-6 rel. | ≤ 4e-9 |
 | Cross-check vs Basalt | < 1e-9 px | ≤ 2.3e-13 px |
-| Reprojection on TUM-VI, published calibrations | RMSE after Kalibr's 4σ filter ≤ 0.105 px, ≤ 5% corners removed | pinhole-equi 0.083 / 0.087 px, omni-radtan 0.083 / 0.085 px (cam0 / cam1), 2.9% removed |
+| Reprojection on TUM-VI, published calibrations | RMSE after Kalibr's 4σ filter ≤ published RMSE (0.093–0.107 px per model and camera), ≤ 5% corners removed, every radius band ≤ published | pinhole-equi 0.083 / 0.087 px, omni-radtan 0.083 / 0.085 px (cam0 / cam1), 2.9% removed |
 | Simulated IMU integration, 60 s | < 1e-6 m, < 1e-8 rad | ≤ 7e-8 m, ≤ 1e-11 rad |
 
-Data lives in `~/data` (overflow: `/mnt/c/Users/user/data`), never in the repo. TUM-VI so far: `~/data/tumvi/` with calib-cam1 (EuRoC format), calib-cam8 (bag) and the published Kalibr results.
+Stage 1 gate status:
+
+| Gate | Target | Result |
+| --- | --- | --- |
+| 1a static init, simulation: NEES (200 Monte Carlo runs) | tilt, gyro bias and tilt + b_g + b_a inside the 95% band | 1.92 / 2.93 / 7.82 (bands [1.73, 2.29] / [2.67, 3.35] / [7.46, 8.56]) |
+| 1a static init, EuRoC MH_01–05: gravity direction | < 1° on every stationary window | max 0.77–0.95° per sequence |
+
+**How to reproduce.** Every gate result above comes from committed scripts, never ad-hoc commands:
+
+- `scripts/data/fetch_tumvi.sh` and `scripts/data/fetch_euroc.sh` download, verify and extract the datasets.
+- `scripts/run_gates.sh` builds, runs the unit tests and every gate checker (`python/msckf_gates/`, also installed as `gate-<name>` commands). Each gate writes its outputs and `gate_out/<gate>/report.md`, with a PASS/FAIL table and the ungated diagnostics.
+
+Data lives in `~/data` ($MSCKF_DATA; overflow `/mnt/c/Users/user/data`, $MSCKF_DATA_LARGE), never in the repo:
+
+- `~/data/tumvi/`: calib-cam1 and room1 (EuRoC format, 512×512), calib-cam8 (bag) and the published Kalibr results.
+- `/mnt/c/Users/user/data/euroc/`: Machine Hall MH_01–05 (ASL format), from the ETH Research Collection bundle (record 20.500.11850/690084; the old robotics.ethz.ch links are dead).
 
 ## Scope and rules
 
@@ -153,6 +169,18 @@ This is the primary path for the cart, which almost always starts stationary.
 3. v = 0, p = 0, b_g = mean gyro, b_a from prior calibration.
 4. Covariance: roll and pitch from accelerometer noise over the window, gyro bias from gyro noise over the window, yaw and position set to a small value since they define the gauge.
 
+Implementation notes (`include/msckf/init/static_init.h`, `tools/static_init_eval`):
+
+- Output is `ImuInitState`: the IMU state and the 15-dim error covariance in the filter's order (δθ, δp, δv, δb_g, δb_a; `imu_err` indices), shared with dynamic init.
+- Yaw = 0 means the global x axis is the horizontal projection of the IMU x axis.
+- Covariance is the first-order propagation of the window-averaged noise (σ²/T) and the b_a prior: δθ_tilt = ⌊z×⌋(n̄_a + δb_a)/|f|, so tilt and b_a are correlated and that cross term is in P. The biases also get the random walk between the window mean and the window end, σ_w² T / 3: tilt and b_a are otherwise almost perfectly correlated, and leaving it out made the joint NEES overconfident (8-dof NEES 9.3 vs band [7.5, 8.6]).
+- Stationarity: accelerometer std (√trace of the sample covariance) ≤ 0.1 m/s², tracker median disparity ≤ 1 px when available, and |f| within 0.3 m/s² of g. Disparity is an optional input until the KLT tracker exists.
+- Simulation (200 Monte Carlo runs, random tilt up to 34°, b_a drawn from the prior): mean NEES inside the 95% band for tilt (2 dof), gyro bias (3) and tilt + b_g + b_a (8), checked over four seeds; exact (1e-9) without noise.
+- Real data, TUM-VI: no static starts. room1 (and calib-cam1) begin handheld: the lowest 1 s accelerometer std is 0.13 m/s² and all windows are correctly refused, so TUM-VI tests dynamic init only.
+- Real data, EuRoC MH_01–05 (gate `stage1a_static_init`): the sequences do not start at rest either. The first ~20 s are a handheld IMU-excitation motion, then the MAV sits on the ground with motors off for a few seconds before take-off, which is where the stationary windows are (2–19 per sequence). Tilt error 0.69–0.89° mean, 0.95° max. Almost all of it is accelerometer bias: with EuRoC's ground-truth b_a as the prior it drops to 0.05–0.13°. Static init cannot separate tilt from b_a, so without a bias calibration ~1° is the floor for an ADIS16448-class IMU.
+- Accelerometer bias prior for EuRoC: σ = 0.1 m/s² per axis (uncalibrated MEMS; EuRoC's ground truth has |b_a| ≈ 0.15 m/s²). With the code default 0.05 (which assumes a prior calibration) the tilt NEES on MH_01 was 9.2 (2 dof), overconfident; with 0.1 it is 1.4–2.3.
+- Gyro bias on EuRoC (not gated): our estimate is repeatable across stationary windows (0.06–0.31 mrad/s spread) but sits 1.1–1.5 mrad/s from EuRoC's ground-truth b_w in every sequence (NEES 47–80). EuRoC's biases come from its own estimator rather than a measurement, and the mean gyro of a stationary window is the most direct estimate there is, so this is treated as a reference discrepancy to revisit in Stage 3 (the filter will estimate b_g too), not an initializer error.
+
 ### 1b. Dynamic initialization
 
 For starts in motion, follow the two-step design in sqrtVINS (Peng, Chen, Huang, TRO 2025):
@@ -175,9 +203,13 @@ The protocol is adopted from sqrtVINS, so results compare directly with its publ
 
 Run on simulation (50 seeds per scenario), EuRoC and TUM-VI (left camera only), and cart data. This judges initialization by whether the VIO that follows actually works, not just by the initial state. Targets below are proposed starting points.
 
+Gate split (decided at the start of Stage 1): condition 3 needs the filter, which is Stage 3. So the Stage 1 gate covers everything measurable against ground truth at hand-off: conditions 1 and 2, gravity, velocity and scale error, initial NEES and runtime. The success rate with condition 3 (VIO ATE over the next 10 s) is re-run, and gated, once Stage 3 exists; the targets below stay as they are.
+
+Build order: 1a static init (needs only the IMU, plus the tracker's median disparity when available), IMU preintegration (cross-checked against GTSAM's formulas), a minimal KLT tracker on our camera models that feeds bearings and disparity to the initializer (sqrtVINS style; the Stage 2 front end replaces it), then 1b: linear solve, refinement, excitation gate.
+
 | Metric | How | v1 target |
 | --- | --- | --- |
-| Success rate | Share of segment starts meeting all three conditions, per window length and ATE threshold | ≥ 95% at 0.5 m with a 1 s window on EuRoC and TUM-VI |
+| Success rate | Share of segment starts meeting all three conditions, per window length and ATE threshold (condition 3 from Stage 3 on) | ≥ 95% at 0.5 m with a 1 s window on EuRoC and TUM-VI |
 | Cart success rate | Same protocol on cart sessions, static and rolling starts | ≥ the sqrtVINS binary on the same segments |
 | Time to initialize | Shortest window meeting the success target | ≤ 1 s handheld; static path on cart |
 | Gravity direction error | Angle between estimated and ground-truth gravity in the first IMU frame | < 1° |

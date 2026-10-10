@@ -28,6 +28,8 @@ add_library(msckf
   src/eval/timing.cpp
   src/eval/trajectory.cpp
   src/imu/propagation.cpp
+  src/init/static_init.cpp
+  src/io/euroc.cpp
   src/sim/scenarios.cpp
   src/sim/simulator.cpp
   src/sim/spline.cpp
@@ -52,6 +54,9 @@ target_compile_options(msckf_calib PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(calib_reproj tools/calib_reproj.cpp)
 target_link_libraries(calib_reproj PRIVATE msckf_calib)
+
+add_executable(static_init_eval tools/static_init_eval.cpp)
+target_link_libraries(static_init_eval PRIVATE msckf_calib)
 
 if(MSCKF_BUILD_TESTS)
   enable_testing()

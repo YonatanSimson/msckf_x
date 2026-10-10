@@ -9,6 +9,8 @@
 //                  that has a mav0/NAME directory)
 //   --step N       use every N-th image (default 1)
 //   --out DIR      writes frames.csv and corners.csv (default calib_out)
+//   --no-open-junctions  detect without the junction-opening dilation (for
+//                  comparison; see AprilGridDetector::detect)
 //
 // Images come from DIR/mav0/<cam>/data.csv (EuRoC layout; TUM-VI uses it too).
 
@@ -36,7 +38,7 @@ namespace {
 
 void usage() {
   std::cerr << "usage: calib_reproj --euroc DIR --camchain YAML --target YAML [--cam NAME] "
-               "[--step N] [--out DIR]\n";
+               "[--step N] [--out DIR] [--no-open-junctions]\n";
 }
 
 struct ImageEntry {
@@ -146,6 +148,7 @@ double median(std::vector<double> v) {
 int main(int argc, char** argv) {
   std::string euroc, camchain, target, only_cam, out = "calib_out";
   int step = 1;
+  AprilGridDetectorOptions detector_options;
   try {
     for (int i = 1; i < argc; ++i) {
       const std::string arg = argv[i];
@@ -159,6 +162,7 @@ int main(int argc, char** argv) {
       else if (arg == "--cam") only_cam = next();
       else if (arg == "--step") step = std::max(1, std::stoi(next()));
       else if (arg == "--out") out = next();
+      else if (arg == "--no-open-junctions") detector_options.open_junctions = false;
       else if (arg == "-h" || arg == "--help") {
         usage();
         return 0;
@@ -172,7 +176,7 @@ int main(int argc, char** argv) {
     }
 
     const AprilGrid grid = AprilGrid::fromKalibrYaml(target);
-    const AprilGridDetector detector(grid);
+    const AprilGridDetector detector(grid, detector_options);
     fs::create_directories(out);
     std::ofstream frames_csv(fs::path(out) / "frames.csv");
     std::ofstream corners_csv(fs::path(out) / "corners.csv");
