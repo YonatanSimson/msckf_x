@@ -20,6 +20,10 @@ add_library(msckf
   src/camera/kannala_brandt.cpp
   src/camera/double_sphere.cpp
   src/camera/eucm.cpp
+  src/imu/propagation.cpp
+  src/sim/scenarios.cpp
+  src/sim/simulator.cpp
+  src/sim/spline.cpp
 )
 target_include_directories(msckf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(msckf PUBLIC Eigen3::Eigen sophus)
