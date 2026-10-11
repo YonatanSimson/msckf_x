@@ -65,7 +65,7 @@ import cv2
 import numpy as np
 import yaml
 
-from msckf_gates.common import REPO, data_dir, large_data_dir, run, tool, write_metrics
+from msckf_gates.common import REPO, data_dir, euroc_images, large_data_dir, run, tool, write_metrics
 
 BASALT_REPO = Path(os.environ.get("BASALT_REPO", Path.home() / "work" / "basalt"))
 sys.path.insert(0, os.environ.get("BASALT_PYTHON", str(BASALT_REPO / "build" / "relwithdebinfo" / "python")))
@@ -128,19 +128,6 @@ def variants() -> list[Variant]:
 
 
 # ------------------------------------------------------------- sequences ----
-
-
-def euroc_images(cam_dir: Path) -> list[tuple[int, Path]]:
-    out: list[tuple[int, Path]] = []
-    if not (cam_dir / "data.csv").exists():
-        return out
-    with open(cam_dir / "data.csv") as f:
-        for line in f:
-            if line.startswith("#") or not line.strip():
-                continue
-            t, name = line.strip().split(",")
-            out.append((int(t), cam_dir / "data" / name.strip()))
-    return out
 
 
 def tumvi_kb4(camchain: Path, cam: str) -> np.ndarray:

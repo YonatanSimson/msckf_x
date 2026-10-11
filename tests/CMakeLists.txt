@@ -14,6 +14,8 @@ msckf_add_test(test_static_init)
 msckf_add_test(test_preintegration)
 msckf_add_test(test_klt_tracker)
 target_link_libraries(test_klt_tracker PRIVATE msckf_vision)
+msckf_add_test(test_basalt_flow)
+target_link_libraries(test_basalt_flow PRIVATE msckf_vision)
 
 msckf_add_test(test_camera_basalt_crosscheck)
 target_link_libraries(test_camera_basalt_crosscheck PRIVATE basalt_headers)

@@ -8,6 +8,7 @@
 #include "msckf/camera/pinhole_radtan.h"
 #include "msckf/vision/bearing_ransac.h"
 #include "msckf/vision/klt_tracker.h"
+#include "synthetic_texture.h"
 
 #include <opencv2/imgproc.hpp>
 #include <sophus/se3.hpp>
@@ -123,15 +124,7 @@ TEST(BearingRansac, KeepsInliersUnderPureRotation) {
   EXPECT_GT(r.num_inliers, 0.95 * c.a.size());
 }
 
-// Smooth random texture (blurred noise), large enough to shift.
-cv::Mat texture(int w, int h, uint64_t seed) {
-  cv::Mat noise(h, w, CV_32F);
-  cv::RNG rng(seed);
-  rng.fill(noise, cv::RNG::UNIFORM, 0.0, 255.0);
-  cv::GaussianBlur(noise, noise, cv::Size(0, 0), 2.0);
-  cv::normalize(noise, noise, 0, 255, cv::NORM_MINMAX);
-  return noise;
-}
+using test::texture;
 
 TEST(KltTracker, TracksKnownTranslationSubPixel) {
   constexpr int W = 640, H = 480;

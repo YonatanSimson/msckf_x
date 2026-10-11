@@ -27,6 +27,36 @@ def large_data_dir():
     return Path(os.environ.get("MSCKF_DATA_LARGE", "/mnt/c/Users/user/data"))
 
 
+# The adopted front end (plan, Stage 1, "Head-to-head against Basalt"): our
+# vendored Basalt flow (tracker_eval --tracker basalt) with Basalt's shipped
+# optical-flow settings (data/tumvi_512_config.json and data/euroc_config.json
+# at Basalt 914808d: frame_to_frame, pattern 51, 5 iterations, 3 levels, 0.2 px
+# forward-backward; detection grid 40 px for TUM-VI 512, 50 px otherwise),
+# plus the camera model's valid-region mask so every feature has a bearing.
+def basalt_flow_args(grid_px):
+    return ["--tracker", "basalt", "--basalt-type", "frame_to_frame", "--grid", str(grid_px), "--fb-dist2", "0.04",
+            "--pattern", "51", "--iterations", "5", "--levels", "3", "--mask-valid"]
+
+
+FRONT_END_TUMVI = basalt_flow_args(40)
+FRONT_END_EUROC = basalt_flow_args(50)  # also used for TartanAir and KITTI
+
+
+def euroc_images(cam_dir):
+    """[(t_ns, path)] of a EuRoC-format camera directory (mav0/camN); empty if absent."""
+    cam_dir = Path(cam_dir)
+    out = []
+    if not (cam_dir / "data.csv").exists():
+        return out
+    with open(cam_dir / "data.csv") as f:
+        for line in f:
+            if line.startswith("#") or not line.strip():
+                continue
+            t, name = line.strip().split(",")
+            out.append((int(t), cam_dir / "data" / name.strip()))
+    return out
+
+
 def gate_out(name):
     out = Path(os.environ.get("MSCKF_GATE_OUT", REPO / "gate_out")) / name
     out.mkdir(parents=True, exist_ok=True)

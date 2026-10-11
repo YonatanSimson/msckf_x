@@ -6,8 +6,8 @@ Usage:
             if not sink.show(frame):
                 break
 
-With a GUI build of OpenCV, frames go to a window (space = pause, n = step,
-q/Esc = quit). With a headless build (pip opencv-python-headless, as in
+With a GUI build of OpenCV, frames go to a window (space or a left click =
+pause / resume, n = step, q/Esc = quit). With a headless build (pip opencv-python-headless, as in
 indoor3d_venv), frames are written to <out_dir>/<name>.mp4, which is opened
 in the Windows default player under WSL.
 """
@@ -16,6 +16,14 @@ import shutil
 import subprocess
 
 import cv2
+
+# The opencv-python wheel bundles Qt without fonts, and its import points
+# QT_QPA_FONTDIR at that empty cv2/qt/fonts, so Qt warns on every window
+# ("QFontDatabase: Cannot find font directory"). Qt reads the variable when the
+# first window opens, so overriding it after importing cv2 is enough.
+SYSTEM_FONTS = "/usr/share/fonts/truetype/dejavu"
+if os.path.isdir(SYSTEM_FONTS) and not os.path.isdir(os.environ.get("QT_QPA_FONTDIR", "")):
+    os.environ["QT_QPA_FONTDIR"] = SYSTEM_FONTS
 
 
 def has_gui():
@@ -48,8 +56,11 @@ class FrameSink:
         self.open_video = open_video
         self.writer = None
         self.paused = False
+        self.placed = False
+        self.clicked = False
         if self.gui:
             cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+            cv2.setMouseCallback(name, self._on_mouse)
         else:
             os.makedirs(out_dir, exist_ok=True)
 
@@ -65,14 +76,28 @@ class FrameSink:
             self.writer.write(frame)
             return True
         cv2.imshow(self.name, frame)
+        if not self.placed:
+            # A resizable window can open off-screen or tiny (seen under WSLg):
+            # size it to the frame and put it on screen.
+            h, w = frame.shape[:2]
+            cv2.resizeWindow(self.name, w, h)
+            cv2.moveWindow(self.name, 40, 40)
+            self.placed = True
         while True:
-            key = cv2.waitKey(0 if self.paused else max(1, int(1000 / self.fps))) & 0xFF
+            # Poll while paused too, so a mouse click (which waitKey does not
+            # return) can resume.
+            key = cv2.waitKey(50 if self.paused else max(1, int(1000 / self.fps))) & 0xFF
             if key in (ord("q"), 27) or cv2.getWindowProperty(self.name, cv2.WND_PROP_VISIBLE) < 1:
                 return False
-            if key == ord(" "):
+            if key == ord(" ") or self.clicked:
                 self.paused = not self.paused
+                self.clicked = False
             if not self.paused or key == ord("n"):
                 return True
+
+    def _on_mouse(self, event, *_):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.clicked = True
 
     def close(self):
         if self.gui:

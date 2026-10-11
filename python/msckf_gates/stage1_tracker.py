@@ -1,10 +1,17 @@
-"""Stage 1 gate: the minimal KLT tracker (plan, "Minimal KLT tracker").
+"""Stage 1 gate: the front-end tracker (plan, "Minimal KLT tracker" and
+"Head-to-head against Basalt").
 
-Runs tools/tracker_eval on every evaluation layer and checks, with thresholds
-fixed before the full results were known:
+The tracker is the adopted front end, our vendored Basalt flow with Basalt's
+shipped settings (msckf_gates.common.FRONT_END_TUMVI / FRONT_END_EUROC);
+--tracker klt re-runs the original minimal KLT tracker. Runs
+tools/tracker_eval on every evaluation layer and checks, with thresholds
+fixed before the full results were known (the plan's targets, not tuned to
+either tracker):
 
-Synthetic (gated): test_klt_tracker passes (sub-pixel tracking of a known
-shift < 0.05 px RMSE; LO-MSAC F1 > 0.95 and above plain RANSAC).
+Synthetic (gated): the tracker's unit test passes (test_basalt_flow: a known
+sub-pixel shift tracked to < 0.05 px RMSE with both flow types, valid-region
+mask; test_klt_tracker: the same for KLT, plus LO-MSAC F1 > 0.95 and above
+plain RANSAC).
 
 TartanAir (gated, relative to its ground-truth floor): the "oracle" aligns each
 detection patch straight into the later frame starting at the true pixel, so
@@ -42,15 +49,15 @@ from pathlib import Path
 
 import numpy as np
 
-from msckf_gates.common import (GateReport, build_dir, data_dir, fnum, gate_out, large_data_dir, read_csv,
-                                run, tool)
+from msckf_gates.common import (FRONT_END_EUROC, FRONT_END_TUMVI, GateReport, build_dir, data_dir, fnum, gate_out,
+                                large_data_dir, read_csv, run, tool)
 
 EUROC = ["MH_01_easy", "MH_02_easy", "MH_03_medium", "MH_04_difficult", "MH_05_difficult"]
 CAMS = ["cam0", "cam1"]
 TARTAN_SETS = ["RetroOffice/Data_easy", "RetroOffice/Data_hard", "Office/Data_hard", "OldTownFall/Data_easy",
                "OldTownFall/Data_hard", "OldTownNight/Data_hard", "AmericanDiner/Data_hard"]
 
-SYNTH_TEST = "test_klt_tracker"
+SYNTH_TEST = {"basalt": "test_basalt_flow", "klt": "test_klt_tracker"}
 TARTAN_MAX_EXCESS_PX = 0.1
 TARTAN_GROSS_PX = 2.0
 TARTAN_MAX_GROSS = 0.02
@@ -104,19 +111,26 @@ def main():
     ap.add_argument("--tartanair", type=Path, default=large_data_dir() / "tartanair")
     ap.add_argument("--kitti-flow", type=Path, default=large_data_dir() / "kitti" / "flow2015")
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--tracker", choices=["basalt", "klt"], default="basalt",
+                    help="basalt: the adopted front end (vendored Basalt flow); klt: the original minimal KLT")
     args = ap.parse_args()
 
     out = gate_out("stage1_tracker")
-    report = GateReport("Stage 1: minimal KLT tracker")
+    names = {"basalt": "vendored Basalt flow", "klt": "minimal KLT"}
+    report = GateReport(f"Stage 1: front-end tracker ({names[args.tracker]})")
     te = tool("tracker_eval")
+    # Tracker options per dataset (KLT: its defaults).
+    tumvi_args = FRONT_END_TUMVI if args.tracker == "basalt" else []
+    euroc_args = FRONT_END_EUROC if args.tracker == "basalt" else []
+    synth_test = SYNTH_TEST[args.tracker]
 
     # Synthetic.
     try:
-        log = run([build_dir() / "tests" / SYNTH_TEST], log=out / f"{SYNTH_TEST}.log")
+        log = run([build_dir() / "tests" / synth_test], log=out / f"{synth_test}.log")
         ok = 1.0
     except RuntimeError:
-        log, ok = (out / f"{SYNTH_TEST}.log").read_text(), 0.0
-    report.check(f"synthetic: {SYNTH_TEST} (shift RMSE < 0.05 px, LO-MSAC F1)", ok, ">=", 1.0)
+        log, ok = (out / f"{synth_test}.log").read_text(), 0.0
+    report.check(f"synthetic: {synth_test} passes", ok, ">=", 1.0)
     for line in log.splitlines():
         if "[ info ]" in line:
             report.note("synthetic: " + line.split("[ info ]", 1)[1].strip())
@@ -132,18 +146,18 @@ def main():
                       "--camchain", calib / "dso" / "camchain.yaml", "--target", target,
                       "--out", out / f"floor_tumvi_{cam}"], out / f"floor_tumvi_{cam}.log"))
         jobs.append(([te, "euroc", "--euroc", room1, "--cam", cam, "--gt", room1 / "dso" / "gt_imu.csv",
-                      "--camchain", room1 / "dso" / "camchain.yaml", "--out", out / f"tumvi_room1_{cam}"],
+                      "--camchain", room1 / "dso" / "camchain.yaml", *tumvi_args, "--out", out / f"tumvi_room1_{cam}"],
                      out / f"tumvi_room1_{cam}.log"))
         for seq in EUROC:
             d = args.euroc / seq
             jobs.append(([te, "euroc", "--euroc", d, "--cam", cam,
                           "--gt", d / "mav0" / "state_groundtruth_estimate0" / "data.csv",
-                          "--out", out / f"euroc_{seq}_{cam}"], out / f"euroc_{seq}_{cam}.log"))
+                          *euroc_args, "--out", out / f"euroc_{seq}_{cam}"], out / f"euroc_{seq}_{cam}.log"))
     trajs = sorted(p for s in TARTAN_SETS for p in (args.tartanair / s).glob("P0*") if p.is_dir())
     for p in trajs:
         name = "tartan_" + "_".join(p.parts[-3:])
-        jobs.append(([te, "tartanair", "--traj", p, "--out", out / name], out / f"{name}.log"))
-    jobs.append(([te, "kitti-flow", "--kitti", args.kitti_flow, "--out", out / "kitti_flow"],
+        jobs.append(([te, "tartanair", "--traj", p, *euroc_args, "--out", out / name], out / f"{name}.log"))
+    jobs.append(([te, "kitti-flow", "--kitti", args.kitti_flow, *euroc_args, "--out", out / "kitti_flow"],
                  out / "kitti_flow.log"))
     jobs_run(jobs, args.workers)
 
@@ -199,7 +213,8 @@ def main():
             report.check(f"EuRoC {seq} {cam}: observation-weighted median track length", float(np.median(obs_lens)),
                          ">=", MIN_TRACK_LEN, "frames")
             report.note(f"EuRoC {seq} {cam}: residual median {np.median(res):.3f}, p90 "
-                        f"{np.percentile(res, 90):.3f} px, > {REAL_OUTLIER_PX:g} px {100 * np.mean(res > REAL_OUTLIER_PX):.1f}%; "
+                        f"{np.percentile(res, 90):.3f} px, > {REAL_OUTLIER_PX:g} px "
+                        f"{100 * np.mean(res > REAL_OUTLIER_PX):.1f}%; "
                         f"features/frame median {np.median(feats):.0f}; {np.median(ms):.1f} ms/frame (median); "
                         f"per-track median length {np.median(lens):.0f}, mean {lens.mean():.1f}, "
                         f"tracks dying within 2 frames {100 * np.mean(lens <= 2):.0f}%")
@@ -239,7 +254,8 @@ def main():
     tracked = st["ok"] + st["no_gt"]
     report.note(f"KITTI flow 2015: {len(e)} tracked features with ground truth over 200 pairs; error median "
                 f"{np.median(e):.3f} px, mean {e.mean():.3f} px; KITTI outliers (> 3 px and > 5 %) "
-                f"{100 * np.mean((e > 3) & (e > 0.05 * fl)):.1f}%; survival {100 * tracked / (tracked + st['lost']):.0f}% "
+                f"{100 * np.mean((e > 3) & (e > 0.05 * fl)):.1f}%; "
+                f"survival {100 * tracked / (tracked + st['lost']):.0f}% "
                 f"of detections")
     for lo, hi in [(0, 10), (10, 30), (30, 60), (60, 1000)]:
         sel = (fl >= lo) & (fl < hi)

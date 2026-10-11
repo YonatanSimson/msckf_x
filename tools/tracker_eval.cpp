@@ -1,6 +1,6 @@
-// Runs the minimal KLT tracker on a dataset and writes, per observation, the
-// error against the dataset's ground truth (plan, "Minimal KLT tracker",
-// evaluation layers). The gate checker (python/msckf_gates/stage1_tracker.py)
+// Runs a feature tracker on a dataset and writes, per observation, the error
+// against the dataset's ground truth (plan, "Minimal KLT tracker", evaluation
+// layers). The gate checker (python/msckf_gates/stage1_tracker.py)
 // computes the metrics from these files.
 //
 //   tracker_eval euroc --euroc DIR --cam camN --gt GT.csv [--camchain YAML] [--time-offset S]
@@ -8,8 +8,7 @@
 //   tracker_eval aprilgrid --euroc DIR --cam camN --gt GT.csv --camchain YAML --target YAML --out DIR
 //   tracker_eval tartanair --traj DIR --out DIR
 //   tracker_eval kitti-flow --kitti DIR --out DIR
-//   tracker_eval tracks (--euroc DIR --cam camN [--camchain YAML] | --traj DIR) [--max-frames N]
-//                       [--tracker klt|basalt] --out DIR
+//   tracker_eval tracks (--euroc DIR --cam camN [--camchain YAML] | --traj DIR) [--max-frames N] --out DIR
 //
 // euroc (EuRoC and TUM-VI, each camera a mono sequence): every finished track
 // with >= 5 observations is triangulated from ground-truth camera poses (IMU
@@ -33,16 +32,16 @@
 // 11): error of each feature tracked into frame 11 against the noc
 // ground-truth flow at its detection pixel (see sampleSparse).
 //
-// Tracker settings (all modes): --fb-px, --ransac-px, --no-ransac, --constant-velocity, --window,
-// --levels, --max-features, --min-distance, --quality, --block-size (KltTrackerConfig).
+// Tracker (all modes): --tracker klt (default; KltTrackerConfig: --fb-px, --ransac-px, --no-ransac,
+// --constant-velocity, --window, --levels, --max-features, --min-distance, --quality, --block-size)
+// or --tracker basalt (our vendored Basalt flow, BasaltFlowTracker, the adopted front end:
+// --basalt-type frame_to_frame|patch, --grid, --fb-dist2, --pattern, --iterations, --levels,
+// --mask-valid).
 //
 // tracks (no ground truth): writes every observation of every track
 // (tracks.csv: frame, t_ns, track, u, v) and the tracker's valid-region mask
 // (valid_mask.png), in the format python/tracker_compare.py also writes for
-// Basalt's tracker, so both are scored by the same code. --tracker basalt runs
-// our vendored Basalt flow (BasaltFlowTracker; --basalt-type
-// frame_to_frame|patch, --grid, --fb-dist2, --pattern, --iterations,
-// --levels, --mask-valid) instead of the KLT tracker.
+// Basalt's own module, so both are scored by the same code.
 //
 // Output: frames.csv (tracker statistics per frame), observations.csv, and in
 // tartanair mode tracks.csv (life cycle against ground-truth visibility).
@@ -102,6 +101,18 @@ struct Args {
                                      // --max-features, --min-distance, --quality
   int max_frames = 0;        // 0: all
 };
+
+// The tracker selected by --tracker: klt (KltTracker) or basalt (our vendored
+// Basalt flow, BasaltFlowTracker; --levels sets its pyramid too).
+std::unique_ptr<vision::FeatureTracker> makeTracker(const CameraModelPtr& camera, const Args& a) {
+  if (a.tracker_type == "basalt") {
+    vision::BasaltFlowConfig bc = a.basalt;
+    bc.levels = a.tracker.pyramid_levels;
+    return std::make_unique<vision::BasaltFlowTracker>(camera, bc);
+  }
+  if (a.tracker_type == "klt") return std::make_unique<KltTracker>(camera, a.tracker);
+  throw std::invalid_argument("unknown tracker " + a.tracker_type);
+}
 
 class FrameLog {
  public:
@@ -241,7 +252,8 @@ int runEuroc(const Args& a) {
   csv << "track,frame,age,u,v,residual_px,track_len,parallax_deg,epipolar_px,status\n"
       << std::setprecision(9);
 
-  KltTracker tracker(kc.model, a.tracker);
+  const auto tr = makeTracker(kc.model, a);
+  vision::FeatureTracker& tracker = *tr;
   const double px_per_rad = 1.0 / tracker.radiansPerPixel();
   std::map<int64_t, std::vector<Obs>> live;
   std::map<std::string, int> counts;
@@ -400,7 +412,8 @@ int runTartanair(const Args& a) {
   std::ofstream csv(fs::path(a.out) / "observations.csv");
   csv << "track,frame,age,u,v,gt_u,gt_v,error_px,oracle_px,status\n" << std::setprecision(9);
 
-  KltTracker tracker(camera, a.tracker);
+  const auto tr = makeTracker(camera, a);
+  vision::FeatureTracker& tracker = *tr;
   struct Birth {
     bool valid;
     std::string why;
@@ -646,7 +659,8 @@ int runKittiFlow(const Args& a) {
     fu.setTo(std::numeric_limits<float>::quiet_NaN(), ch[0] == 0);
     fv.setTo(std::numeric_limits<float>::quiet_NaN(), ch[0] == 0);
 
-    KltTracker tracker(camera, a.tracker);
+    const auto tr = makeTracker(camera, a);
+    vision::FeatureTracker& tracker = *tr;
     std::map<int64_t, Eigen::Vector2d> born;
     for (const auto& f : tracker.process(im10)) born[f.id] = f.uv;
     frames.add(id.str(), 10, 0.0, tracker);
@@ -693,16 +707,7 @@ int runTracks(const Args& a) {
   FrameLog frames(fs::path(a.out) / "frames.csv");
   std::ofstream csv(fs::path(a.out) / "tracks.csv");
   csv << "frame,t_ns,track,u,v\n" << std::setprecision(10);
-  std::unique_ptr<vision::FeatureTracker> tr;
-  if (a.tracker_type == "basalt") {
-    vision::BasaltFlowConfig bc = a.basalt;
-    bc.levels = a.tracker.pyramid_levels;
-    tr = std::make_unique<vision::BasaltFlowTracker>(camera, bc);
-  } else if (a.tracker_type == "klt") {
-    tr = std::make_unique<KltTracker>(camera, a.tracker);
-  } else {
-    throw std::invalid_argument("unknown tracker " + a.tracker_type);
-  }
+  const auto tr = makeTracker(camera, a);
   vision::FeatureTracker& tracker = *tr;
   cv::imwrite((fs::path(a.out) / "valid_mask.png").string(), tracker.validMask());
   const size_t num_frames = a.max_frames > 0 ? std::min<size_t>(images.size(), a.max_frames) : images.size();
