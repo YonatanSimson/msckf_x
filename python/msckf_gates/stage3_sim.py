@@ -8,11 +8,13 @@ fast_rotation (UZH-FPV). The cart is reported only (known overconfident at
 1 px, see the plan's Stage 3 status). Plan, Stage 3 metrics:
 
 - Consistency (gated, FEJ): the Monte Carlo average NEES of orientation and of
-  position (3 dof each), averaged over the run, inside the chi-square 95 % band
-  for the number of runs.
+  position (3 dof each) inside the chi-square 95 % band for the number of runs
+  in at least MIN_INSIDE of the epochs. The band is for one epoch's average;
+  the run-long mean averages far more (correlated) samples, so checking it
+  against the same band would pass a filter that is off at every epoch.
 - Calibration convergence (gated): RMSE over runs of the final extrinsic
   rotation / translation and time-offset errors, < 0.1 deg, < 1 mm, < 0.5 ms.
-- Reported: share of epochs inside the band, final position error RMSE and
+- Reported: run-long mean NEES, final position error RMSE and
   drift (% of path length), per-image filter time.
 """
 
@@ -27,13 +29,20 @@ REPORTED = ["cart"]
 MAX_EXT_ROT_DEG = 0.1
 MAX_EXT_POS_M = 1e-3
 MAX_TD_MS = 0.5
+MIN_RUN_SHARE = 0.99  # shortest run / longest
+MIN_INSIDE = 90.0  # % of epochs; 95 % for independent epochs, some slack for correlation
 
 
-def load(path):
+def load(path, expected_runs):
+    """Every run shares the trajectory, so all cover it to within a frame or
+    two; one that stopped early would cut every run short."""
     rows = read_csv(path)
     runs = sorted({int(r["run"]) for r in rows})
     by_run = {k: [r for r in rows if int(r["run"]) == k] for k in runs}
-    n = min(len(v) for v in by_run.values())
+    lengths = [len(v) for v in by_run.values()]
+    n = min(lengths, default=0)
+    if len(runs) != expected_runs or n < MIN_RUN_SHARE * max(lengths):
+        raise ValueError(f"{path}: {len(runs)} of {expected_runs} runs, epochs per run {n}-{max(lengths, default=0)}")
 
     def col(name):  # runs x epochs
         return np.array([[fnum(r[name]) for r in by_run[k][:n]] for k in runs])
@@ -48,11 +57,10 @@ def evaluate(report, label, col, runs, gated):
         inside = np.mean((avg >= lo) & (avg <= hi)) * 100
         name = f"{label}: mean {'orientation' if kind == 'ori' else 'position'} NEES (3 dof, {runs} runs)"
         if gated:
-            report.check(name + f", band [{lo:.2f}, {hi:.2f}] lower", avg.mean(), ">=", lo)
-            report.check(name + " upper", avg.mean(), "<=", hi)
+            report.check(name + f", epochs inside band [{lo:.2f}, {hi:.2f}]", inside, ">=", MIN_INSIDE, "%")
         else:
-            report.note(f"{name}: {avg.mean():.2f} (band [{lo:.2f}, {hi:.2f}])")
-        report.note(f"{label}: {kind} NEES per epoch inside the band {inside:.0f} % of epochs")
+            report.note(f"{name}: epochs inside band [{lo:.2f}, {hi:.2f}] {inside:.0f} %")
+        report.note(f"{name}: run-long mean {avg.mean():.2f}")
     pos = col("pos_err_m")[:, -1]
     rot = col("rot_err_deg")[:, -1]
     report.note(
@@ -91,7 +99,7 @@ def main():
             if not fej:
                 cmd.append("--no-fej")
             run(cmd, log=out / f"{tag}.log")
-            col, runs = load(d / "epochs.csv")
+            col, runs = load(d / "epochs.csv", args.runs)
             label = f"{sc}, {'FEJ' if fej else 'no FEJ'}"
             evaluate(report, label, col, runs, gated=fej and gated_sc)
             if fej and gated_sc:

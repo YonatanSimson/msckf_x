@@ -100,6 +100,7 @@ int run(const Args& a) {
       *s *= a.init_scale;
     }
     const auto epochs = filter::runFilterOnSimulation(sim, camera, data, options, rc);
+    options.update.landmark_oracle = nullptr;  // it refers to this run's data
     double sum_pose = 0.0;
     for (const auto& e : epochs) {
       const eval::PoseNees n = eval::poseNees(e.T_est, e.cov_pose, e.T_true);
@@ -107,7 +108,9 @@ int run(const Args& a) {
       const double nees_v = dv.dot(e.cov_v.ldlt().solve(dv));
       const Eigen::Vector3d dth = (e.T_est.so3().inverse() * e.T_true.so3()).log();
       sum_pose += n.pose;
-      for (double d : e.update.depth_log_ratio) depth_csv << r << ',' << e.t << ',' << d << '\n';
+      if (a.depth_stats) {
+        for (double d : e.update.depth_log_ratio) depth_csv << r << ',' << e.t << ',' << d << '\n';
+      }
       csv << r << ',' << e.t << ',' << e.v_true.norm() << ',' << dth.norm() * 180.0 / M_PI << ','
           << (e.T_true.translation() - e.T_est.translation()).norm() << ','
           << e.T_true.translation().z() - e.T_est.translation().z() << ',' << dv.norm() << ',' << n.pose << ','

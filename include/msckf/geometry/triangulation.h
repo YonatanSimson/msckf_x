@@ -12,6 +12,9 @@ using Matrix32d = Eigen::Matrix<double, 3, 2>;
 // Orthonormal basis of the plane orthogonal to the unit vector b.
 Matrix32d tangentBasis(const Eigen::Vector3d& b);
 
+// Largest angle between two of the directions (any length), deg.
+double maxRayAngleDeg(const std::vector<Eigen::Vector3d>& directions);
+
 // Point from camera poses T_GC and unit bearings in each camera: least
 // squares on the perpendicular distances to the rays, then Gauss-Newton on
 // the tangent-plane bearing residuals. parallax_deg is the largest angle

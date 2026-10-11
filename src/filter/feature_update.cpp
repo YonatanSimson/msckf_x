@@ -12,22 +12,6 @@
 
 namespace msckf::filter {
 
-namespace {
-
-// Largest angle between the rays from the cameras to the point, deg.
-double maxRayAngleDeg(const std::vector<Sophus::SE3d>& T_GC, const Eigen::Vector3d& p) {
-  double best = 0.0;
-  for (size_t i = 0; i < T_GC.size(); ++i) {
-    for (size_t j = i + 1; j < T_GC.size(); ++j) {
-      const Eigen::Vector3d a = p - T_GC[i].translation(), b = p - T_GC[j].translation();
-      best = std::max(best, std::atan2(a.cross(b).norm(), a.dot(b)));
-    }
-  }
-  return best * 180.0 / M_PI;
-}
-
-}  // namespace
-
 double chi2Quantile(double probability, int dof) {
   static std::mutex mutex;
   static std::map<std::pair<double, int>, double> cache;
@@ -101,7 +85,8 @@ UpdateStats featureUpdate(FilterState& s, const CameraModel& camera, const std::
       clone_of_obs.push_back(it->second);
       T_GC.push_back(Sophus::SE3d(c.R_GI, c.p_GI) * T_IC);
     }
-    if (static_cast<int>(clone_of_obs.size()) < options.min_observations) continue;
+    // Two observations at least: 2M - 3 rows remain after the nullspace projection.
+    if (static_cast<int>(clone_of_obs.size()) < std::max(options.min_observations, 2)) continue;
     ++stats.features;
 
     // One estimate of the point, triangulated from the current clones, for
@@ -110,7 +95,11 @@ UpdateStats featureUpdate(FilterState& s, const CameraModel& camera, const std::
     double parallax = 0.0;
     const bool have_true = options.landmark_oracle && options.landmark_oracle(track.id, &p_true);
     const bool ok = triangulate(T_GC, obs.bearing, &p_f, &parallax);
-    if (have_true && options.oracle_selection) parallax = maxRayAngleDeg(T_GC, p_true);
+    if (have_true && options.oracle_selection) {
+      std::vector<Eigen::Vector3d> rays;
+      for (const Sophus::SE3d& T : T_GC) rays.push_back(p_true - T.translation());
+      parallax = maxRayAngleDeg(rays);
+    }
     if (!ok || parallax < options.min_parallax_deg) {
       ++stats.rejected_triangulation;
       continue;
@@ -123,14 +112,25 @@ UpdateStats featureUpdate(FilterState& s, const CameraModel& camera, const std::
       continue;
     }
 
-    // Left nullspace of H_f: the last 2M - 3 rows of Q^T.
+    // Left nullspace of H_f: the last 2M - 3 rows of Q^T, applied in place.
     const Eigen::HouseholderQR<Eigen::MatrixXd> qr(fj.H_f);
-    const Eigen::MatrixXd Qt = qr.householderQ().transpose();
+    fj.H_x.applyOnTheLeft(qr.householderQ().transpose());
+    fj.r.applyOnTheLeft(qr.householderQ().transpose());
     const int rows = static_cast<int>(fj.r.size()) - 3;
-    const Eigen::MatrixXd H_o = (Qt * fj.H_x).bottomRows(rows);
-    const Eigen::VectorXd r_o = (Qt * fj.r).tail(rows);
+    const Eigen::MatrixXd H_o = fj.H_x.bottomRows(rows);
+    const Eigen::VectorXd r_o = fj.r.tail(rows);
 
-    const Eigen::MatrixXd S = H_o * s.P * H_o.transpose() + sigma2 * Eigen::MatrixXd::Identity(rows, rows);
+    // H_o is non-zero only in the observing clones' and the extrinsic columns.
+    std::vector<int> cols;
+    for (size_t c : clone_of_obs) {
+      for (int k = 0; k < 6; ++k) cols.push_back(s.cloneIndex(c) + k);
+    }
+    if (const int e = s.extrinsicIndex(); e >= 0) {
+      for (int k = 0; k < 6; ++k) cols.push_back(e + k);
+    }
+    const Eigen::MatrixXd H_c = H_o(Eigen::all, cols);
+    const Eigen::MatrixXd S =
+        H_c * s.P(cols, cols) * H_c.transpose() + sigma2 * Eigen::MatrixXd::Identity(rows, rows);
     const double gamma = r_o.dot(S.ldlt().solve(r_o));
     if (gamma > chi2Quantile(options.chi2_probability, rows)) {
       ++stats.rejected_chi2;

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <utility>
 
 namespace msckf::filter {
 
@@ -41,7 +42,7 @@ FrameResult Msckf::addImage(double t_cam, const std::vector<FeatureObservation>&
     const bool ended = tr.t_cam.back() != t_cam;
     const bool in_oldest = full && tr.t_cam.front() == oldest;
     if (ended || (in_oldest && static_cast<int>(tr.t_cam.size()) >= options_.update.min_observations)) {
-      use.push_back(tr);
+      use.push_back(std::move(tr));
       done.push_back(id);
     } else if (in_oldest) {
       // Too short to use: forget its observation in the clone that goes.

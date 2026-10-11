@@ -15,6 +15,18 @@ Matrix32d tangentBasis(const Eigen::Vector3d& b) {
   return B;
 }
 
+double maxRayAngleDeg(const std::vector<Eigen::Vector3d>& directions) {
+  double best = 0.0;
+  for (size_t i = 0; i < directions.size(); ++i) {
+    for (size_t j = i + 1; j < directions.size(); ++j) {
+      const Eigen::Vector3d& a = directions[i];
+      const Eigen::Vector3d& b = directions[j];
+      best = std::max(best, std::atan2(a.cross(b).norm(), a.dot(b)));
+    }
+  }
+  return best * 180.0 / M_PI;
+}
+
 bool triangulate(const std::vector<Sophus::SE3d>& T_GC, const std::vector<Eigen::Vector3d>& b, Eigen::Vector3d* X,
                  double* parallax_deg) {
   Eigen::Matrix3d A = Eigen::Matrix3d::Zero();
@@ -26,13 +38,7 @@ bool triangulate(const std::vector<Sophus::SE3d>& T_GC, const std::vector<Eigen:
     A += P;
     rhs += P * T_GC[i].translation();
   }
-  double max_angle = 0.0;
-  for (size_t i = 0; i < d.size(); ++i) {
-    for (size_t j = i + 1; j < d.size(); ++j) {
-      max_angle = std::max(max_angle, std::atan2(d[i].cross(d[j]).norm(), d[i].dot(d[j])));
-    }
-  }
-  *parallax_deg = max_angle * 180.0 / M_PI;
+  *parallax_deg = maxRayAngleDeg(d);
   Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(A);
   if (es.eigenvalues()(0) < 1e-9 * es.eigenvalues()(2)) return false;
   *X = A.ldlt().solve(rhs);

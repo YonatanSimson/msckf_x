@@ -7,6 +7,7 @@
 #include "msckf/camera/pinhole_radtan.h"
 #include "msckf/filter/feature_update.h"
 #include "msckf/filter/propagator.h"
+#include "msckf/geometry/triangulation.h"
 #include "msckf/sim/scenarios.h"
 #include "msckf/sim/simulator.h"
 
@@ -143,6 +144,31 @@ TEST(FilterUpdate, ExactObservationsLeaveTruthUnchanged) {
   EXPECT_EQ(st.rows, 2 * 5 - 3);
   EXPECT_LT((fx.state.nav.p_GI - before.nav.p_GI).norm(), 1e-4);  // P = I: that residual moves it ~2e-5 m
   EXPECT_LT(fx.state.P.trace(), before.P.trace());
+}
+
+// One observation has no residual left after the nullspace projection
+// (2M - 3 < 0): skipped even when min_observations allows it.
+TEST(FilterUpdate, SingleObservationSkipped) {
+  Fixture fx = makeFixture(true);
+  FeatureTrack one;
+  one.id = fx.track.id;
+  one.t_cam = {fx.track.t_cam.front()};
+  one.uv = {fx.track.uv.front()};
+  one.bearing = {fx.track.bearing.front()};
+  UpdateOptions options;
+  options.min_observations = 1;
+  const Eigen::MatrixXd P = fx.state.P;
+  const UpdateStats st = featureUpdate(fx.state, *camera(), {one}, options);
+  EXPECT_EQ(st.features, 0);
+  EXPECT_EQ(fx.state.P, P);
+}
+
+TEST(Triangulation, MaxRayAngle) {
+  EXPECT_DOUBLE_EQ(maxRayAngleDeg({}), 0.0);
+  EXPECT_DOUBLE_EQ(maxRayAngleDeg({Eigen::Vector3d::UnitX()}), 0.0);
+  // Lengths do not matter; the widest pair (x, -x + y) is 135 deg.
+  EXPECT_NEAR(maxRayAngleDeg({Eigen::Vector3d(2, 0, 0), Eigen::Vector3d(0, 3, 0), Eigen::Vector3d(-1, 1, 0)}), 135.0,
+              1e-12);
 }
 
 }  // namespace

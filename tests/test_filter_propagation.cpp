@@ -1,7 +1,7 @@
 // Filter core (Stage 3): the IMU transition matches finite differences of the
 // nonlinear propagation, the propagated covariance matches Monte Carlo noise,
 // the clone's time-offset column matches finite differences, and clone
-// marginalization keeps the other blocks of P.
+// marginalization keeps the other blocks of P; propagation never goes back.
 
 #include <gtest/gtest.h>
 
@@ -164,6 +164,18 @@ TEST(FilterPropagation, CloneTimeOffsetColumn) {
   const int td = x.timeOffsetIndex();
   const Eigen::Matrix<double, 6, 1> col = x.P.block<6, 1>(x.cloneIndex(0), td) / x.P(td, td);
   EXPECT_LT((fd - col).norm(), 1e-6 * fd.norm()) << "fd " << fd.transpose() << "\ncol " << col.transpose();
+}
+
+// A target before the state time would clone the pose at the wrong time:
+// refused. The same time is a no-op.
+TEST(FilterPropagation, RejectsEarlierTarget) {
+  const SimData d = simulate(Scenario::kHandheld, false, 1);
+  FilterState x = stateAt(truthAt(d, 1.0));
+  propagate(x, d.imu, 1.05, ImuNoise{});
+  const Eigen::MatrixXd P = x.P;
+  EXPECT_NO_THROW(propagate(x, d.imu, 1.05, ImuNoise{}));
+  EXPECT_EQ(x.P, P);
+  EXPECT_THROW(propagate(x, d.imu, 1.04, ImuNoise{}), std::invalid_argument);
 }
 
 TEST(FilterPropagation, MarginalizeKeepsOtherBlocks) {
