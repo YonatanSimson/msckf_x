@@ -15,7 +15,7 @@ Updated as work progresses. Decisions that changed a section below are recorded 
 | 2026-10-10 | 1a | Static initialization, `static_init_eval`, EuRoC IMU reader; gate scripts (`scripts/`, `python/msckf_gates/`) | 08ffd04 |
 | 2026-10-11 | 1 | IMU preintegration (GTSAM cross-check), minimal KLT tracker and its evaluation; Basalt flow adopted (vendored `BasaltFlowTracker`, checked against Basalt); `tracker_compare`; benchmark runner (`scripts/run_benchmarks.sh`, `~/benchmark/<date-time>/`) | 2be8886 |
 | 2026-10-11 | 1 | Stage 1 tracker gate on the vendored Basalt flow (FAIL: checkerboard aliasing on TartanAir, room1 > 2 px; deferred), TartanAir gross-error overlay | 7ca7e9d |
-| 2026-10-11 | 1b | Dynamic initialization (sqrtVINS paper: feature-less linear solve, refinement with landmarks, keyframes, scale gate), retry pipeline with static and in-place starts; sim car and pushed cart, KITTI raw; `dynamic_init_eval`, `play_init.py`. Stage 1b gate PASS | (uncommitted) |
+| 2026-10-11 | 1b | Dynamic initialization (sqrtVINS paper: feature-less linear solve, refinement with landmarks, keyframes, scale gate), retry pipeline with static and in-place starts; sim car and pushed cart, KITTI raw; `dynamic_init_eval`, `play_init.py`. Stage 1b gate PASS | 3bcae91 |
 
 Stage 0 gate status:
 
@@ -317,11 +317,72 @@ How the references treat rotation-only starts (from their docs and papers, not v
 
 In-place init is a batch complementary filter, made safe by the vision "not translating" check. A feature-fitted homography is ambiguous with planar scenes, whereas the gyro-predicted one is not. It is still a candidate cross-check of gyro bias and time offset.
 
-Remaining gaps to sqrtVINS: (2) the paper's no-refinement fallback (linear solution + conservative covariance, 0.6 ms); (3) the window-retry policy of our step 3.
+**Gate errors as RMSE (user, 2026-10-11: "rmse is better than median").** The Stage 1b gate checks gravity RMSE < 1° and velocity RMSE < 0.1 m/s (time to initialize stays a median, as a latency), and reports scale RMSE over dynamic hand-offs. Still **PASS**:
+
+| Retry pipeline, RMSE | Gravity | Velocity (relative) | Scale |
+| --- | --- | --- | --- |
+| Sim handheld | 0.45° | 0.041 m/s (7.2 %) | 5.1 % |
+| EuRoC MH_01–05 | 0.43° | 0.084 m/s (10.2 %) | 9.1 % |
+| TUM-VI room1 | 0.45° | 0.042 m/s (3.9 %) | 2.9 % |
+| Sim fast rotation | 0.55° | 0.064 m/s (20.8 %) | 12.4 % |
+| Sim cart (pushed) | 0.29° | 0.157 m/s (18.4 %) | 25.0 % |
+| Sim car | 1.35° | 1.39 m/s (18.4 %) | 23.7 % |
+
+Scale against the milestone's < 5 %: met only on room1. The tails (worst 28 % EuRoC, 127 % cart, 103 % car) dominate the RMSE; not gated yet.
+
+**The paper's no-refinement variant, and a limit of the feature-less solve (2026-10-11).** The paper (Sec. V-B) says only that "it is possible to skip iterative refinement and use a conservative initial covariance" (0.6 ms on a laptop). It gives no values, and it scores success by the ATE of the following 10 s of VIO, so a rough start that the filter later corrects still counts.
+
+Implemented:
+- `FeaturelessInitResult::covariance`: least-squares covariance of (v, gravity tangent). The residual variance comes from the fit, floored by the preintegrated position noise.
+- `linearHandoff`: the linear solution propagated to the last keyframe, with that covariance mapped to tilt, position and velocity. Preintegration noise and bias priors are added.
+- `InitRefinementPolicy` {kAlways (default), kFallback, kNever}.
+- Eval: `dynamic_init_eval --refine`, `--linear-cov-scale`, and an `nr` row per fixed window.
+
+Measured on the tuning sequences and simulation (`nr` rows, scale 1):
+
+| NR, linear only | 0.1 s | 0.3 s | 0.5 s | 1 s |
+| --- | --- | --- | --- | --- |
+| Sim handheld: gravity RMSE / velocity NEES | 27° / 57 000 | 10.6° / 107 | 1.9° / 7.0 | 0.37° / 9.6 |
+| EuRoC V1_01–03 | 4.4° / 11 (1 accepted) | 3.4° / 50 | 3.1° / 27 | 1.1° / 16 |
+| TUM-VI room2 | 3.7° / 327 | 1.6° / 18 | 1.1° / 5.9 | 0.79° / 10.5 |
+| Sim cart | 8.0° / 8 900 | 5.3° / 2 200 | 2.9° / 18 | 3.5° / 40 |
+| Sim car | – | 2.2° / 48 000 | 1.6° / 26 000 | 4.4° / 58 |
+
+The least-squares covariance is overconfident by 3× to 10 000×. Its errors are systematic: a wrong translation direction biases every equation alike, and the residuals stay small. So no fixed factor makes it conservative. kAlways stays the default, and NR remains a diagnostic until Stage 3 can score it by the paper's VIO criterion.
+
+**Straight-path degeneracy of the feature-less solve.**
+- **The cause:** each pair's equations are projected onto the plane orthogonal to that pair's translation direction, which removes its scale (Prop. 2). On a straight path every pair's translation is parallel, so the speed along the path vanishes from the system. The least-squares solution returns ≈ 0 for it, which is not an estimate.
+- **The evidence:** the linear velocity error is 80–100 % of the speed on the sim cart and car at every window length (0.1–1 s). On handheld motion, whose path curves, it falls to 7 % at 1 s.
+- **Who recovers it:** only the refinement does (cart 91 % success, 25 % scale RMSE), through landmark depths shared across frames. The 6 diverged cart refinements start from this ≈ 0 speed.
+- **Consistent with the user's experience** (2026-10-11: sqrtVINS "works the best" on a cart driving a boustrophedon): the U-turns change the travel direction, which makes speed observable.
+- **Candidate fix (a deviation from the paper, to justify on cart data):** add relative-scale equations from features seen in three or more keyframes. A common feature fixes the ratio of the pair scales s_ij / s_ik, which restores the along-track speed whenever the speed changes. Alternatively, give the refinement an along-track speed start from those triplets.
+
+**Triplet relative-scale equations, tried (2026-10-11).** Implemented in `featurelessInit` (`FeaturelessInitConfig::triplet_scale`). For keyframes i, j, k, a common feature's unit-baseline depths at i give s_ij μ_ij = s_ik μ_ik. With ρ the median ratio, that adds one equation (t_ijᵀ(A_ij x + rb_ij) − ρ t_ikᵀ(A_ik x + rb_ik)) / √(1+ρ²) = 0. Translation signs come from positive depths, and features need ≥ 2° of parallax.
+
+| Sim cart, 1 s, linear solve only | Without | With |
+| --- | --- | --- |
+| No pixel noise: gravity / speed error | 3.24° / 50 % | 0.19° / 7 % |
+| 0.3 px noise | 2.66° / 53 % | 0.36° / 18 % |
+| 1 px noise | 2.35° / 85 % | 1.08° / 63 % |
+
+So the equations are right, and the simulator's 1 px noise swamps them: it is drawn independently per frame, where real tracking jitter is ~0.1–0.3 px and correlated.
+
+Through the full retry pipeline they do not pay off. The refinement already recovers the speed from its landmarks, and the extra equations sometimes hand it a worse start that it accepts confidently. Sim cart: scale RMSE 28 → 119 %, NEES 5.2 → 93 (one 0.18 vs 0.90 m/s solution). Car: success 80 → 91 %, but scale 24 → 43 % and NEES 3.7 → 6.7. Handheld and fast rotation are unchanged. **Default off**; re-test on real cart data (`dynamic_init_eval --triplets`). Weighting the triplets by their ratio spread changed nothing and was removed.
+
+**Stillness tests and turns (user, 2026-10-11).**
+- **Simulation allowance:** the simulator's independent 1 px per-frame noise kept every still start from passing the 1 px disparity limit. `dynamic_init_eval` sim now adds 3σ (`still_noise_px`; 0 on real data). The sim cart's stops now start static: 11 starts at 0.01–0.16°. Cart success is 100 % and its NEES 3.96.
+- **Quantile, not median:** stillness is tested at the 90th percentile of feature disparity (`still_disparity_quantile`). Outdoors most features are distant and barely move while the device translates, and any near feature that moves proves translation.
+- **Remaining false in-place starts:** 8 on the sim cart, all at the end of a U-turn arc as the cart decelerates into a stop (0.1–0.6 m/s at window start). Gravity errors are 1–2° (NEES up to 13).
+- **Why (user):** a turn is radial, not pure rotation, and the camera looks ahead. Translation along the optical axis barely moves features near the focus of expansion, and the sim's 4 px allowance hides ~4 cm of travel. On real data the limit is 1 px.
+- **Why the IMU cannot help:** on an arc the accelerometer sees the centripetal acceleration v·ω (and any braking) as well as gravity. A static or in-place solution, which assumes zero acceleration, therefore tilts its gravity toward the outside of the turn: 0.73° at 0.5 m/s on the 2 m radius, 2.9° at 1 m/s. The gyro-compensated specific force cannot reveal it (constant braking is indistinguishable from tilt), so only vision can.
+- **The dynamic path is unaffected:** it models the motion through preintegration (sim cart gravity RMSE 0.32° on dynamic starts).
+- **Next step if real cart data shows it:** a coherent-translation test, i.e. fit the expansion pattern (epipole) to all rotation-compensated flow. Its noise falls as 1/√N, rather than thresholding a per-feature quantile.
+
+Remaining gaps to sqrtVINS: (2) the paper's no-refinement variant: implemented, but with no usable conservative covariance yet (above); (3) the window-retry policy of our step 3.
 
 Earlier result, all frames: EuRoC: 7 of 67 starts fail (excitation gate 3, too few usable features 3, no convergence 1). Its window scale misses 5 % in half the runs, tracking excitation: EuRoC's 1 s windows carry 1.1–1.8 m/s² of acceleration against 2.4 (TUM-VI) and 3.5 (sim), and the scale failures drop from 9/15 in the lowest excitation quartile to 3/15 in the highest. Mono scale is observable only through acceleration; the plan's answer is to retry with a longer window (step 3), not yet implemented.
 
-**Cart baseline.** sqrtVINS is the only initializer observed to work on the pushed cart, so it's the reference for cart data. Run it as an unmodified binary on the same segments and windows; it's GPL, so its source stays closed under the clean-room rule. On cart data, the Stage 1 gate is matching its success rate.
+**Cart baseline.** sqrtVINS is the only initializer observed to work on the pushed cart, so it's the reference for cart data. Run it as an unmodified binary on the same segments and windows; it's LGPL-3.0, and its source stays closed under the clean-room rule (user: paper only). On cart data, the Stage 1 gate is matching its success rate.
 
 ### Stage 1 metrics
 

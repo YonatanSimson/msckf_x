@@ -62,6 +62,31 @@ struct FeaturelessInitConfig {
   double min_acc_excitation = 0.2;   // m/s^2, specific force spread in {I0}
   int gravity_iterations = 5;        // Gauss-Newton with |g| fixed
   double gravity_norm = 9.81;        // m/s^2 (constants.h)
+  // Relative-scale equations from features seen in three keyframes (ours, not
+  // in the paper). Prop. 2 removes each pair's scale s_ij, so on a straight
+  // path (all translations parallel) the speed along it drops out and the
+  // solve returns ~0 for it. A feature seen from keyframes i, j, k has one
+  // depth at i: triangulated with unit baselines along t_ij and t_ik it gives
+  // mu_ij, mu_ik with s_ij mu_ij = s_ik mu_ik, so with rho = median over the
+  // features of mu_ik / mu_ij, one more equation per (i, j, k):
+  //   (t_ij^T (A_ij x + rb_ij) - rho t_ik^T (A_ik x + rb_ik)) / sqrt(1 + rho^2) = 0,
+  // linear in x. It restores the along-path speed whenever the speed changes
+  // over the window (constant velocity stays unobservable). Translation
+  // directions get their sign from positive depths.
+  // Off (2026-10-11): on the linear solve alone they help (sim cart, 1 s:
+  // gravity 2.35 -> 1.08 deg at 1 px noise; at 0.3 px speed error 53 -> 18 %,
+  // noise-free 50 -> 7 %), but through the full retry pipeline the
+  // refinement already recovers the speed from its landmarks, and the extra
+  // equations sometimes hand it a worse start it then accepts confidently
+  // (sim cart scale RMSE 28 -> 119 %, velocity NEES 5.2 -> 93; car 24 -> 43 %;
+  // handheld and fast rotation unchanged). Re-test on real cart data
+  // (dynamic_init_eval --triplets).
+  bool triplet_scale = false;
+  // Per feature and pair, rotation-compensated. 2 deg (sim, 1 px noise): 0.5
+  // deg let noisy depth ratios through (handheld 0.5 s gravity 2.2 deg vs 1.5).
+  double triplet_min_parallax_deg = 2.0;
+  int triplet_min_features = 5;           // per triplet
+  double triplet_weight = 1.0;            // relative to the epipolar rows
 };
 
 struct FeaturelessInitResult {
@@ -72,12 +97,24 @@ struct FeaturelessInitResult {
   double singular_value = 0.0;  // smallest, of the system with unit-norm columns
   double acc_excitation = 0.0;  // m/s^2
   int pairs = 0;                // keyframe pairs used
+  int triplets = 0;             // relative-scale equations used (triplet_scale)
   // Per used pair (j, k): the translation direction's eigenvalue ratio
   // lambda_t / lambda_1 (small = well-defined direction) and the scale s
   // implied by the solution (camera translation length, m).
   std::vector<std::pair<int, int>> pair_frames;
   std::vector<double> pair_eigen_ratio;
   std::vector<double> pair_scale;
+  // Covariance of the solution, x = (v_I0, gravity direction on its tangent
+  // plane: g_I0 = |g| normalize(u + B dx)), from the Gauss-Newton normal
+  // equations with the residual variance estimated from the fit (floored by
+  // the IMU's preintegrated position noise). The paper's "conservative
+  // initial covariance" for skipping refinement gives no values; this makes
+  // the degenerate directions visible: on a straight path every pair's
+  // translation is parallel, the projection removes the speed along it, and
+  // its variance is huge instead of the estimate silently being ~0.
+  bool has_covariance = false;
+  Eigen::Matrix<double, 5, 5> covariance = Eigen::Matrix<double, 5, 5>::Zero();
+  Eigen::Matrix<double, 3, 2> gravity_basis = Eigen::Matrix<double, 3, 2>::Zero();  // B
 };
 
 // Keyframes of a window, as in the paper ("selected based on the average

@@ -8,6 +8,10 @@
 //                           [--imu-yaml YAML] [--bias gt|zero] --out DIR
 //   dynamic_init_eval sim --scenario handheld|cart|fast_rotation [--seeds N] --out DIR
 //
+// --refine always|fallback|never: the retry pipeline's refinement policy
+// (InitRefinementPolicy); --linear-cov-scale: variance factor of the linear
+// hand-off. Each window also gets an "nr" row: the paper's no-refinement
+// variant (linear solution + linearHandoff covariance, scale gate).
 // --restart S: after a failed retry, start the pipeline again every S s
 // until it succeeds ("restart" rows: window = time from the start to init).
 // euroc also writes trace.csv (TraceLog): per frame of every pipeline run,
@@ -99,6 +103,13 @@ struct Args {
   int seeds = 10;
   double imu_noise_scale = 1.0;  // multiplies the IMU noise densities (real-data inflation)
   double pixel_sigma = 1.0;      // px, bearing noise at the image centre
+  InitRefinementPolicy refine = InitRefinementPolicy::kAlways;  // retry rows (--refine always|fallback|never)
+  double linear_covariance_scale = DynamicInitConfig{}.linear_covariance_scale;  // --linear-cov-scale
+  bool triplets = FeaturelessInitConfig{}.triplet_scale;  // --triplets: add the relative-scale equations
+  double triplet_weight = FeaturelessInitConfig{}.triplet_weight;               // --triplet-weight
+  double triplet_parallax = FeaturelessInitConfig{}.triplet_min_parallax_deg;   // --triplet-parallax (deg)
+  double sim_pixel_noise = -1.0;  // sim: override SimConfig::pixel_noise (px) when >= 0 (--sim-pixel-noise)
+  double still_noise_px = 0.0;  // sim: its pixel noise (see evaluateRetry)
   double restart = 0.0;  // s; > 0: after a failed retry, start again every `restart` s ("restart" rows)
   double min_excitation = DynamicInitConfig{}.linear.min_acc_excitation;  // m/s^2 (the pipeline's: 0, scale gate instead)
 };
@@ -205,6 +216,26 @@ RunLog::Row staticRow(const ImuInitState& st, const Truth& truth) {
   return r;
 }
 
+// Linear hand-off row (the paper's NR): gravity and velocity of the linear
+// solution at the first frame, its pair scales, and sigmas, NEES and the
+// scale gate from linearHandoff's covariance at the last keyframe.
+RunLog::Row linearHandoffRow(const FeaturelessInitResult& lin, const ImuInitState& st, const Truth& truth) {
+  RunLog::Row r;
+  r.ok = r.solved = true;
+  r.g_I0 = lin.g_I0;
+  r.v_I0 = lin.v_I0;
+  std::vector<double> est, tru;
+  for (size_t i = 0; i < lin.pair_scale.size(); ++i) {
+    const auto [j, k] = lin.pair_frames[i];
+    est.push_back(lin.pair_scale[i]);
+    tru.push_back((truth.p_C[k] - truth.p_C[j]).norm());
+  }
+  r.scale_err = scaleError(est, tru);
+  handoffSigmas(st, r);
+  r.velocity_nees = bodyVelocityNees(st, truth.v_body_last);
+  return r;
+}
+
 // Refined-solution row: gravity and velocity of the first clone, scale of the
 // clones' camera translations over all pairs.
 RunLog::Row refinedRow(const InitRefinementResult& ref, const Sophus::SE3d& T_IC, const Truth& truth) {
@@ -232,7 +263,7 @@ void evaluateWindow(RunLog& log, const std::string& seq, double t0, double windo
                     const std::vector<ImuSample>& imu, const std::vector<InitFrame>& all_frames,
                     const Sophus::SE3d& T_IC, const Eigen::Vector3d& bg, const Eigen::Vector3d& ba,
                     const ImuNoise& noise, double bearing_sigma, const TruthFn& truth_for,
-                    const FeaturelessInitConfig& lin_cfg) {
+                    const FeaturelessInitConfig& lin_cfg, double linear_covariance_scale) {
   using Row = RunLog::Row;
   auto start = std::chrono::steady_clock::now();
   // Keyframes (the paper's: by parallax, at most 5), for both steps.
@@ -297,6 +328,31 @@ void evaluateWindow(RunLog& log, const std::string& seq, double t0, double windo
     r.ms = ms;
   }
   log.add(seq, t0, window, win.size(), r, truth);
+
+  Row nr = l;
+  nr.method = "nr";
+  nr.solved = false;
+  if (lin.ok) {
+    DynamicInitConfig dc;
+    dc.linear_covariance_scale = linear_covariance_scale;
+    if (const auto st = linearHandoff(imu, win, lin, bg, ba, noise, dc)) {
+      const Row base = nr;
+      nr = linearHandoffRow(lin, *st, truth);
+      nr.method = base.method;
+      nr.singular_value = base.singular_value;
+      nr.acc_excitation = base.acc_excitation;
+      nr.pairs = base.pairs;
+      nr.ms = base.ms;
+      if (!passesScaleGate(*st, dc)) {
+        nr.ok = false;
+        nr.reason = "scale";
+      }
+    } else {
+      nr.ok = false;
+      nr.reason = "covariance";
+    }
+  }
+  log.add(seq, t0, window, win.size(), nr, truth);
 
   Row o;
   o.method = "okvis";
@@ -363,7 +419,8 @@ class TraceLog {
       t_a = res.keyframe_t.front();
     }
     const double t_end = res.keyframe_t.empty() ? t_start + res.window : res.keyframe_t.back();
-    const std::string init = res.ok ? (res.in_place ? "in_place" : res.is_static ? "static" : "dynamic") : "";
+    const std::string init =
+        res.ok ? (res.in_place ? "in_place" : res.is_static ? "static" : res.linear_only ? "linear" : "dynamic") : "";
     for (const InitFrame& fr : frames) {
       if (fr.t < t_start - 1e-3) continue;
       if (fr.t > std::max(t_end, t_start + res.window) + 1e-3) break;
@@ -412,22 +469,35 @@ void evaluateRetry(RunLog& log, TraceLog* trace, const std::string& seq, double 
                    const std::vector<ImuSample>& imu, const std::vector<InitFrame>& frames, const Sophus::SE3d& T_IC,
                    const Eigen::Vector3d& bg, const Eigen::Vector3d& ba, const ImuNoise& noise,
                    double bearing_sigma, double pixels_per_radian, const TruthFn& truth_for,
-                   const FrameTruthFn& frame_truth, const FeaturelessInitConfig& lin_cfg, double restart = 0.0) {
+                   const FrameTruthFn& frame_truth, const FeaturelessInitConfig& lin_cfg, const Args& args) {
+  const double restart = args.restart;
   DynamicInitConfig cfg;
+  cfg.refine = args.refine;
+  cfg.linear_covariance_scale = args.linear_covariance_scale;
   cfg.linear = lin_cfg;
   cfg.refinement.bearing_sigma = bearing_sigma;
   cfg.pixels_per_radian = pixels_per_radian;
+  // Stillness disparity limit: 1 px plus 3x the pixel noise. The simulator
+  // draws independent noise per frame (sigma 1 px: two still frames differ by
+  // 3 px at the 90th percentile), where a real tracker's jitter is far smaller
+  // and correlated; on real data args.still_noise_px is 0.
+  cfg.static_init.max_disparity_px += 3.0 * args.still_noise_px;
+  cfg.in_place_max_disparity_px += 3.0 * args.still_noise_px;
   auto row = [&](const DynamicInitResult& res, const std::string& method, double window, int iterations,
                  double ms) -> bool {
     if (res.reason == "data" || res.reason == "imu" || res.reason == "imu_gap") return false;  // no data for it
     const std::optional<Truth> truth = truth_for(res.keyframe_t);
     if (!truth) return false;
     RunLog::Row r;
-    if (res.ok) r = res.is_static ? staticRow(res.refinement.state, *truth) : refinedRow(res.refinement, T_IC, *truth);
+    if (res.ok) {
+      r = res.is_static     ? staticRow(res.refinement.state, *truth)
+          : res.linear_only ? linearHandoffRow(res.linear, res.refinement.state, *truth)
+                            : refinedRow(res.refinement, T_IC, *truth);
+    }
     r.method = method;
     r.ok = res.ok;
     r.reason = res.ok ? "ok" : res.reason;
-    r.init = res.ok ? (res.in_place ? "in_place" : res.is_static ? "static" : "dynamic") : "";
+    r.init = res.ok ? (res.in_place ? "in_place" : res.is_static ? "static" : res.linear_only ? "linear" : "dynamic") : "";
     r.singular_value = res.linear.singular_value;
     r.acc_excitation = res.linear.acc_excitation;
     r.pairs = res.linear.pairs;
@@ -552,6 +622,9 @@ int runEuroc(const Args& a) {
   }
   FeaturelessInitConfig lin_cfg;
   lin_cfg.min_acc_excitation = a.min_excitation;
+  lin_cfg.triplet_scale = a.triplets;
+  lin_cfg.triplet_weight = a.triplet_weight;
+  lin_cfg.triplet_min_parallax_deg = a.triplet_parallax;
   fs::create_directories(a.out);
   RunLog log(fs::path(a.out) / "runs.csv");
   TraceLog trace(fs::path(a.out) / "trace.csv");
@@ -616,11 +689,12 @@ int runEuroc(const Args& a) {
     for (double w : a.windows) {
       const std::vector<InitFrame> win = windowFrames(all, t0, w);
       if (win.size() < 2) continue;
-      evaluateWindow(log, seq, t0 - t_begin, w, imu, win, kc.T_IC, bg, ba, noise, bearing_sigma, truth_for, lin_cfg);
+      evaluateWindow(log, seq, t0 - t_begin, w, imu, win, kc.T_IC, bg, ba, noise, bearing_sigma, truth_for, lin_cfg,
+                     a.linear_covariance_scale);
       ++runs;
     }
     evaluateRetry(log, &trace, seq, t0 - t_begin, t0, imu, all, kc.T_IC, bg, ba, noise, bearing_sigma,
-                  pixels_per_radian, truth_for, frame_truth, lin_cfg, a.restart);
+                  pixels_per_radian, truth_for, frame_truth, lin_cfg, a);
   }
   std::cout << seq << ": " << runs << " windows\n";
   return 0;
@@ -643,6 +717,9 @@ int runSim(const Args& a) {
   const auto camera = std::make_shared<PinholeRadtan>(752, 480, k);
   FeaturelessInitConfig lin_cfg;
   lin_cfg.min_acc_excitation = a.min_excitation;
+  lin_cfg.triplet_scale = a.triplets;
+  lin_cfg.triplet_weight = a.triplet_weight;
+  lin_cfg.triplet_min_parallax_deg = a.triplet_parallax;
   fs::create_directories(a.out);
   RunLog log(fs::path(a.out) / "runs.csv");
   int runs = 0;
@@ -650,6 +727,7 @@ int runSim(const Args& a) {
     SimConfig c = defaultSimConfig(scenario);
     c.duration = 6.0 * a.segment + DynamicInitConfig{}.max_window + 2.0;
     c.seed = static_cast<uint64_t>(seed);
+    if (a.sim_pixel_noise >= 0.0) c.pixel_noise = a.sim_pixel_noise;
     const Simulator sim(c, makeScenario(scenario, c.duration + 1.0, static_cast<uint64_t>(seed)), camera);
     const SimData data = sim.run();
     const Sophus::SE3d T_IC(c.R_IC, c.p_IC);
@@ -679,17 +757,19 @@ int runSim(const Args& a) {
       return truth;
     };
     const double bearing_sigma = c.pixel_noise / k(0);
+    Args sim_args = a;
+    sim_args.still_noise_px = c.pixel_noise;
     const double max_retry = DynamicInitConfig{}.max_window;
     for (double t0 = 0.5; t0 + max_retry < c.duration - 0.5; t0 += a.segment) {
       for (double w : a.windows) {
         const std::vector<InitFrame> win = windowFrames(all, t0, w);
         if (win.size() < 2) continue;
         evaluateWindow(log, seq, t0, w, data.imu, win, T_IC, c.gyro_bias0, c.acc_bias0, c.imu_noise, bearing_sigma,
-                       truth_for, lin_cfg);
+                       truth_for, lin_cfg, a.linear_covariance_scale);
         ++runs;
       }
       evaluateRetry(log, nullptr, seq, t0, t0, data.imu, all, T_IC, c.gyro_bias0, c.acc_bias0, c.imu_noise,
-                    bearing_sigma, k(0), truth_for, {}, lin_cfg, a.restart);
+                    bearing_sigma, k(0), truth_for, {}, lin_cfg, sim_args);
     }
   }
   std::cout << a.scenario << ": " << runs << " windows\n";
@@ -726,6 +806,18 @@ int main(int argc, char** argv) {
       else if (arg == "--min-excitation") a.min_excitation = std::stod(next());  // linear step's accelerometer gate
       else if (arg == "--segment") a.segment = std::stod(next());
       else if (arg == "--restart") a.restart = std::stod(next());
+      else if (arg == "--triplets") a.triplets = true;
+      else if (arg == "--sim-pixel-noise") a.sim_pixel_noise = std::stod(next());
+      else if (arg == "--triplet-weight") a.triplet_weight = std::stod(next());
+      else if (arg == "--triplet-parallax") a.triplet_parallax = std::stod(next());
+      else if (arg == "--linear-cov-scale") a.linear_covariance_scale = std::stod(next());
+      else if (arg == "--refine") {
+        const std::string v = next();
+        if (v == "always") a.refine = InitRefinementPolicy::kAlways;
+        else if (v == "fallback") a.refine = InitRefinementPolicy::kFallback;
+        else if (v == "never") a.refine = InitRefinementPolicy::kNever;
+        else throw std::invalid_argument("--refine " + v);
+      }
       else if (arg == "--windows") {
         a.windows.clear();
         std::stringstream ss(next());

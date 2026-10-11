@@ -12,9 +12,16 @@ namespace msckf {
 
 namespace {
 
-// Median angle (rad) between the bearings of the features seen in both the
-// first and the last frame; < 0 when they share none.
-double medianDisparity(const std::vector<InitFrame>& frames) {
+// The `quantile` of x (0..1, nearest rank); x is reordered.
+double quantile(std::vector<double>& x, double q) {
+  const size_t i = std::min(x.size() - 1, static_cast<size_t>(q * static_cast<double>(x.size())));
+  std::nth_element(x.begin(), x.begin() + static_cast<std::ptrdiff_t>(i), x.end());
+  return x[i];
+}
+
+// Angle (rad) between the bearings of the features seen in both the first and
+// the last frame, at the given quantile; < 0 when they share none.
+double disparityQuantile(const std::vector<InitFrame>& frames, double q) {
   if (frames.size() < 2) return -1.0;
   std::vector<double> d;
   for (const auto& [id, b0] : frames.front().bearings) {
@@ -26,8 +33,7 @@ double medianDisparity(const std::vector<InitFrame>& frames) {
     }
   }
   if (d.empty()) return -1.0;
-  std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
-  return d[d.size() / 2];
+  return quantile(d, q);
 }
 
 }  // namespace
@@ -57,8 +63,7 @@ std::optional<ImuInitState> inPlaceInitialize(const std::vector<ImuSample>& imu,
     }
   }
   if (d.size() < 10) return std::nullopt;  // too few common features to judge
-  std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
-  const double disparity = d[d.size() / 2];
+  const double disparity = quantile(d, config.still_disparity_quantile);
   if (disparity_px) *disparity_px = disparity;
   if (disparity > config.in_place_max_disparity_px) return std::nullopt;
 
@@ -95,6 +100,65 @@ std::optional<ImuInitState> inPlaceInitialize(const std::vector<ImuSample>& imu,
   s.P.block<3, 3>(kP, kP) = config.static_init.position_sigma * config.static_init.position_sigma * I3;
   s.P.block<3, 3>(kV, kV) = sv * sv * I3;
   return s;
+}
+
+std::optional<ImuInitState> linearHandoff(const std::vector<ImuSample>& imu, const std::vector<InitFrame>& keyframes,
+                                          const FeaturelessInitResult& linear, const Eigen::Vector3d& gyro_bias,
+                                          const Eigen::Vector3d& acc_bias, const ImuNoise& noise,
+                                          const DynamicInitConfig& config) {
+  if (!linear.has_covariance || keyframes.size() < 2) return std::nullopt;
+  const double gn = linear.g_I0.norm();
+  ImuPreintegration pre(gyro_bias, acc_bias, noise);
+  pre.integrateRange(imu, keyframes.front().t, keyframes.back().t);
+  const double T = pre.deltaTime();
+  NavState s0;
+  s0.R_GI = attitudeFromUp(-linear.g_I0 / gn);
+  s0.v_GI = s0.R_GI * linear.v_I0;
+  ImuInitState st;
+  st.t = keyframes.back().t;
+  st.nav = pre.predict(s0, gyro_bias, acc_bias);
+  st.gyro_bias = gyro_bias;
+  st.acc_bias = acc_bias;
+
+  // First-order map from x = (dv_I0, du) (g_I0 = gn normalize(u + B du)) to
+  // the hand-off errors (dtheta body, dp global, dv global):
+  //   g_b = R_l^T g_I0 (R_l: I0 -> last, gyro), tilt dtheta = -[g_b]x dg_b / gn^2
+  //   v_b = R_l^T (v_I0 + g_I0 T + dv_pre), dv_G = R_GI (dv_b - [v_b]x dtheta)
+  //   p_G = R_GI0 (v_I0 T + g_I0 T^2 / 2 + dp_pre)
+  const Eigen::Matrix3d Rl = pre.deltaR().matrix();
+  const Eigen::Matrix<double, 3, 2> dg = gn * linear.gravity_basis;  // d g_I0 / d du
+  const Eigen::Vector3d g_b = Rl.transpose() * linear.g_I0;
+  const Eigen::Matrix3d R_GI = st.nav.R_GI.matrix(), R_GI0 = s0.R_GI.matrix();
+  const Eigen::Vector3d v_b = R_GI.transpose() * st.nav.v_GI;
+  Eigen::Matrix<double, 9, 5> L = Eigen::Matrix<double, 9, 5>::Zero();
+  Eigen::Matrix<double, 3, 5> dgb, dvb;
+  dgb << Eigen::Matrix3d::Zero(), Rl.transpose() * dg;
+  dvb << Rl.transpose(), Rl.transpose() * dg * T;
+  const Eigen::Matrix<double, 3, 5> dth = -Sophus::SO3d::hat(g_b) * dgb / (gn * gn);
+  L.block<3, 5>(0, 0) = dth;
+  L.block<3, 3>(3, 0) = R_GI0 * T;
+  L.block<3, 2>(3, 3) = R_GI0 * dg * 0.5 * T * T;
+  L.block<3, 5>(6, 0) = R_GI * (dvb - Sophus::SO3d::hat(v_b) * dth);
+
+  using namespace imu_err;
+  st.P.setZero();
+  const Eigen::Matrix<double, 9, 9> P9 = config.linear_covariance_scale * L * linear.covariance * L.transpose();
+  // [dtheta, dp, dv] blocks map to kTheta, kP, kV (contiguous, same order).
+  st.P.block<9, 9>(kTheta, kTheta) = P9;
+  // Preintegration noise over the window (rotated to the hand-off's frames).
+  const Matrix9d& Q = pre.covariance();  // [dtheta, dp, dv], frame I0
+  st.P.block<3, 3>(kTheta, kTheta) += Rl.transpose() * Q.block<3, 3>(0, 0) * Rl;
+  st.P.block<3, 3>(kP, kP) += R_GI0 * Q.block<3, 3>(3, 3) * R_GI0.transpose();
+  st.P.block<3, 3>(kV, kV) += R_GI0 * Q.block<3, 3>(6, 6) * R_GI0.transpose();
+  // Gauge: yaw (about global z, in the body frame) and the first frame's position.
+  const Eigen::Vector3d z_b = R_GI.transpose() * Eigen::Vector3d::UnitZ();
+  const double ys = config.refinement.gauge_sigma;
+  st.P.block<3, 3>(kTheta, kTheta) += ys * ys * z_b * z_b.transpose();
+  st.P.block<3, 3>(kP, kP) += ys * ys * Eigen::Matrix3d::Identity();
+  const double sbg = config.refinement.gyro_bias_sigma, sba = config.refinement.acc_bias_sigma;
+  st.P.block<3, 3>(kBg, kBg) = sbg * sbg * Eigen::Matrix3d::Identity();
+  st.P.block<3, 3>(kBa, kBa) = sba * sba * Eigen::Matrix3d::Identity();
+  return st;
 }
 
 bool passesScaleGate(const ImuInitState& state, const DynamicInitConfig& config, double* velocity_sigma) {
@@ -158,7 +222,7 @@ DynamicInitResult initializeDynamic(const std::vector<ImuSample>& imu, const std
       }
       std::optional<double> disparity;
       if (config.pixels_per_radian > 0.0) {
-        const double d = medianDisparity(tail);
+        const double d = disparityQuantile(tail, config.still_disparity_quantile);
         // No common feature over the window: no evidence of stillness.
         disparity = d < 0.0 ? 1e9 : d * config.pixels_per_radian;
       }
@@ -187,7 +251,22 @@ DynamicInitResult initializeDynamic(const std::vector<ImuSample>& imu, const std
       res.reason = res.linear.reason;
       continue;
     }
-    res.refinement = refineInit(imu, kf, T_IC, res.linear, gyro_bias, acc_bias, noise, config.refinement);
+    res.linear_only = false;
+    if (config.refine != InitRefinementPolicy::kNever) {
+      res.refinement = refineInit(imu, kf, T_IC, res.linear, gyro_bias, acc_bias, noise, config.refinement);
+    }
+    if (config.refine == InitRefinementPolicy::kNever ||
+        (!res.refinement.ok && config.refine == InitRefinementPolicy::kFallback)) {
+      const std::string why = res.refinement.ok ? "" : res.refinement.reason;
+      res.refinement = InitRefinementResult{};
+      if (auto st = linearHandoff(imu, kf, res.linear, gyro_bias, acc_bias, noise, config)) {
+        res.refinement.ok = true;
+        res.refinement.state = *st;
+        res.linear_only = true;
+      } else {
+        res.refinement.reason = why.empty() ? "covariance" : why;
+      }
+    }
     if (!res.refinement.ok) {
       res.reason = res.refinement.reason;
       continue;

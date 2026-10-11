@@ -33,7 +33,8 @@ namespace msckf {
 // not have and which refused most cart and car windows outright.
 // Static first: each attempt first checks whether the device is at rest over
 // the attempt's window (its last min(window, static_init.window) seconds):
-// accelerometer spread and the median feature disparity, from the bearings
+// accelerometer spread and the feature disparity (still_disparity_quantile),
+// from the bearings
 // with pixels_per_radian. If it is, static initialization (Stage 1a: gravity
 // from the bias-corrected mean specific force, v = 0) is the hand-off. A
 // still device has no parallax, so the dynamic steps cannot succeed there
@@ -45,14 +46,31 @@ namespace msckf {
 // the static tests and the dynamic steps (no parallax). Without translation
 // gravity is still the mean specific force, once each sample is rotated into
 // one frame by the gyro, and v = 0. Accepted when the rotation-compensated
-// median disparity is below in_place_max_disparity_px (no translation
+// disparity (still_disparity_quantile) is below in_place_max_disparity_px (no translation
 // relative to the scene) and the mean specific force has gravity's norm.
+// Refinement policy. The paper: refinement is the primary path, and "it is
+// possible to skip iterative refinement and use a conservative initial
+// covariance", initializing in 0.6 ms (kNever, its "Ours (NR)"). kFallback
+// (ours): refine, and when the refinement refuses, hand off the linear
+// solution instead (linearHandoff). Either way the scale gate applies.
+enum class InitRefinementPolicy { kAlways, kFallback, kNever };
+
 struct DynamicInitConfig {
+  InitRefinementPolicy refine = InitRefinementPolicy::kAlways;
+  // Linear hand-off covariance = linear-solve covariance x this (variance
+  // factor; the paper's "conservative").
+  double linear_covariance_scale = 1.0;
   bool try_static = true;
   StaticInitConfig static_init;
   // Bearing angle to pixels for the disparity test (the focal length). 0: no
   // image test, the IMU test only (passes a cart cruising at constant velocity).
   double pixels_per_radian = 0.0;
+  // Quantile of the feature disparities tested for stillness (static and in
+  // place). Not the median: outdoors most features are far away and barely
+  // move while the device translates; any near feature that moves proves
+  // translation (sim cart, slow U-turns at 0.2-0.5 m/s: the median passed,
+  // the 90th percentile does not).
+  double still_disparity_quantile = 0.9;
   bool try_in_place = true;  // needs pixels_per_radian > 0
   double in_place_max_disparity_px = 1.0;
   // Velocity sigma of the in-place hand-off (v = 0): the residual
@@ -83,6 +101,7 @@ struct DynamicInitResult {
   bool ok = false;
   bool is_static = false;  // the hand-off is static initialization's (refinement.state; no clones)
   bool in_place = false;   // ... or in-place (rotating, not translating; also is_static)
+  bool linear_only = false;  // the hand-off is the linear solution (linearHandoff; no clones)
   std::string reason;   // of the last attempt, when not ok ("scale": failed the scale gate)
   double velocity_sigma = 0.0;  // m/s, hand-off, of the successful (or last refined) attempt
   double window = 0.0;  // s, of the successful (or last) attempt
@@ -98,12 +117,24 @@ bool passesScaleGate(const ImuInitState& state, const DynamicInitConfig& config,
 
 // In-place initialization over frames (first to last): the gyro-compensated
 // mean specific force gives the tilt, v = 0. nullopt unless the
-// rotation-compensated median disparity (px, returned) and the specific
+// rotation-compensated disparity quantile (px, returned) and the specific
 // force norm pass.
 std::optional<ImuInitState> inPlaceInitialize(const std::vector<ImuSample>& imu, const std::vector<InitFrame>& frames,
                                               const Sophus::SE3d& T_IC, const Eigen::Vector3d& gyro_bias,
                                               const Eigen::Vector3d& acc_bias, const ImuNoise& noise,
                                               const DynamicInitConfig& config, double* disparity_px = nullptr);
+
+// Hand-off from the linear solution alone (the paper's NR): the state at the
+// last keyframe, propagated from (v_I0, g_I0) by IMU preintegration, with the
+// first-order covariance of the linear solve (FeaturelessInitResult::covariance,
+// times linear_covariance_scale) mapped to tilt, position and velocity, plus
+// the preintegration noise and the bias priors. The global frame's shift with
+// the gravity error is ignored (first order in the tilt, covered by the scale).
+// nullopt if the linear result has no covariance.
+std::optional<ImuInitState> linearHandoff(const std::vector<ImuSample>& imu, const std::vector<InitFrame>& keyframes,
+                                          const FeaturelessInitResult& linear, const Eigen::Vector3d& gyro_bias,
+                                          const Eigen::Vector3d& acc_bias, const ImuNoise& noise,
+                                          const DynamicInitConfig& config);
 
 // frames: all frames available from t_start on (more than max_window is
 // fine); imu must cover them.

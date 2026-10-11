@@ -28,13 +28,15 @@ metrics define them:
       covariance passing the scale gate; condition 3, VIO ATE over the next
       10 s, needs Stage 3)
   time to initialize, median <= 1 s (plan: <= 1 s handheld)
-  gravity direction error, median < 1 deg
-  velocity error, median < 0.1 m/s
+  gravity direction error, RMSE < 1 deg
+  velocity error, RMSE < 0.1 m/s
+  (errors as RMSE, not medians (user, 2026-10-11): the tail counts)
   simulation only: mean velocity NEES at the hand-off (3 dof, yaw free) in its
       95 % band (plan: initial NEES on simulation)
 Car, cart, fast rotation and KITTI are reported. The plan's scale metric is a
 Sim(3) fit over 10 s of VIO (Stage 3); each solution's window scale is
-reported. Every method at fixed window lengths (the paper's protocol) is
+reported (RMSE of the window scale error of dynamic hand-offs; static and
+in-place starts have no scale). Every method at fixed window lengths (the paper's protocol) is
 reported as diagnostics.
 """
 
@@ -66,7 +68,7 @@ SCENARIOS = ["handheld", "car", "cart", "fast_rotation"]
 # 2 px bearings bring V1_02, V1_03 and room2 into their NEES bands (V1_01, slow
 # motion, stays ~3x overconfident: open). Simulation is not inflated.
 REAL_NOISE = ["--imu-noise-scale", "4", "--pixel-sigma", "2"]
-METHODS = ["refined", "linear", "okvis"]  # per window length; "retry" is summarized separately
+METHODS = ["refined", "nr", "linear", "okvis"]  # per window length; "retry" is summarized separately
 GATED = ("sim handheld", "EuRoC MH_01-05", "TUM-VI room1")
 MAX_WINDOW = 5.0  # s, the retry limit (DynamicInitConfig::max_window)
 MIN_SUCCESS = 0.95
@@ -96,18 +98,25 @@ def summarize(rows):
         sel = [r for r in rows if fnum(r["window"]) == w]
         acc = [r for r in sel if r["ok"] == "1"]
 
-        def med(key, rs=acc):
+        def values(key, rs=acc):
             x = np.array([fnum(r[key]) for r in rs])
-            x = x[np.isfinite(x)]
+            return x[np.isfinite(x)]
+
+        def rms(key):
+            x = values(key)
+            return float(np.sqrt(np.mean(np.square(x)))) if len(x) else float("nan")
+
+        def med(key, rs=acc):  # timing only
+            x = values(key, rs)
             return float(np.median(x)) if len(x) else float("nan")
 
         out[w] = {
             "runs": len(sel),
             "accepted": len(acc) / max(len(sel), 1),
             "accurate": sum(accurate(r) for r in sel) / max(len(sel), 1),
-            "gravity": med("gravity_err_deg"),
-            "velocity": med("velocity_err"),
-            "scale": med("scale_err_pct"),
+            "gravity": rms("gravity_err_deg"),
+            "velocity": rms("velocity_err"),
+            "scale": rms("scale_err_pct"),
             "ms": med("time_ms", sel),
             "reasons": collections.Counter(r["reason"] for r in sel if r["ok"] != "1"),
         }
@@ -193,7 +202,13 @@ def main():
         vel = np.array([fnum(r["velocity_err"]) for r in ok])
         nees = np.array([fnum(r["velocity_nees"]) for r in ok])
         nees = nees[np.isfinite(nees)]
+        scale = np.array([fnum(r["scale_err_pct"]) for r in ok])
+        scale = scale[np.isfinite(scale)]
         nan = float("nan")
+
+        def rms(x):
+            return float(np.sqrt(np.mean(np.square(x)))) if len(x) else nan
+
         success = len(ok) / len(rr)
         t_med = float(np.median(t)) if len(t) else nan
         if name in GATED:
@@ -201,15 +216,8 @@ def main():
                 f"{name}: success rate (retry up to {MAX_WINDOW:g} s)", 100 * success, ">=", 100 * MIN_SUCCESS, "%"
             )
             report.check(f"{name}: time to initialize, median", t_med, "<=", MAX_TIME_TO_INIT, "s")
-            report.check(
-                f"{name}: gravity error median",
-                float(np.median(grav)) if len(grav) else nan,
-                "<",
-                MAX_GRAVITY_DEG,
-                "deg",
-            )
-            report.check(f"{name}: velocity error median", float(np.median(vel)) if len(vel) else nan, "<",
-                         MAX_VELOCITY, "m/s")  # fmt: skip
+            report.check(f"{name}: gravity error RMSE", rms(grav), "<", MAX_GRAVITY_DEG, "deg")
+            report.check(f"{name}: velocity error RMSE", rms(vel), "<", MAX_VELOCITY, "m/s")
             if name.startswith("sim"):
                 lo, hi = nees_band(len(nees), 3) if len(nees) else (nan, nan)
                 mean = float(nees.mean()) if len(nees) else nan
@@ -217,9 +225,9 @@ def main():
                 report.check(f"{name}: velocity NEES mean >= band lower {lo:.2f} (3 dof)", mean, ">=", lo)
         fails = collections.Counter(r["reason"] for r in rr if r["ok"] != "1")
         report.note(f"{name}, retry: success {len(ok)}/{len(rr)} ({100 * success:.0f}%), time to initialize median "
-                    f"{t_med:.2f} s, p90 {np.percentile(t, 90) if len(t) else nan:.2f} s; accepted: gravity "
-                    f"{np.median(grav) if len(grav) else nan:.2f} deg, velocity "
-                    f"{np.median(vel) if len(vel) else nan:.3f} m/s (medians), velocity NEES mean "
+                    f"{t_med:.2f} s, p90 {np.percentile(t, 90) if len(t) else nan:.2f} s; accepted (RMSE): gravity "
+                    f"{rms(grav):.2f} deg, velocity {rms(vel):.3f} m/s, scale {rms(scale):.1f} % "
+                    f"({len(scale)} dynamic); velocity NEES mean "
                     f"{nees.mean() if len(nees) else nan:.2f} (3 dof); failures: "
                     + (", ".join(f"{k} {v}" for k, v in fails.most_common()) or "-"))  # fmt: skip
 
@@ -230,7 +238,7 @@ def main():
             for w, st in summarize([r for r in rows if r["method"] == method]).items():
                 reasons = ", ".join(f"{k} {v}" for k, v in st["reasons"].most_common()) or "-"
                 report.note(f"{name}, {method}, {w:g} s: {st['runs']} runs, accepted {100 * st['accepted']:.0f}%, "
-                            f"accurate {100 * st['accurate']:.0f}%; accepted runs' median errors: gravity "
+                            f"accurate {100 * st['accurate']:.0f}%; accepted runs' error RMSE: gravity "
                             f"{st['gravity']:.2f} deg, velocity {st['velocity']:.3f} m/s, scale {st['scale']:.1f}%; "
                             f"rejected: {reasons}; {st['ms']:.2f} ms")  # fmt: skip
     return report.finish(out)
