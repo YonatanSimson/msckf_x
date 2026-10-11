@@ -14,11 +14,29 @@ dependencies = [
   "pyyaml>=6",
 ]
 
+[project.optional-dependencies]
+dev = ["mypy", "black", "isort", "flake8", "types-PyYAML"]
+
 [project.scripts]
 play-euroc = "play_euroc:main"
 gate-stage0-reprojection = "msckf_gates.stage0_reprojection:main"
 gate-stage1a-static-init = "msckf_gates.stage1a_static_init:main"
+gate-stage1-tracker = "msckf_gates.stage1_tracker:main"
+tracker-sweep = "tracker_sweep:main"
+tracker-compare = "tracker_compare:main"
+benchmark-compare = "benchmark_compare:main"
+play-tracks = "play_tracks:main"
 
 [tool.setuptools]
-py-modules = ["viz", "play_euroc"]
+py-modules = ["viz", "play_euroc", "tracker_sweep", "tracker_compare", "benchmark_compare", "play_tracks", "basalt_flow_check"]
 packages = ["msckf_gates"]
+
+[tool.black]
+line-length = 120
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+ignore_missing_imports = true

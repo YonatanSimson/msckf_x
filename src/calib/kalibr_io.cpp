@@ -85,10 +85,40 @@ std::vector<KalibrCamera> loadKalibrCamchain(const std::string& path) {
                                  n["intrinsics"].as<std::vector<double>>(), distortion, res.at(0),
                                  res.at(1));
     cam.model_name = camera_model + "-" + (distortion_model == "equidistant" ? "equi" : distortion_model);
+    if (n["T_cam_imu"]) {
+      Eigen::Matrix4d T;
+      for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) T(r, c) = n["T_cam_imu"][r][c].as<double>();
+      }
+      const Sophus::SE3d T_CI(Sophus::makeRotationMatrix(T.topLeftCorner<3, 3>()), T.topRightCorner<3, 1>());
+      cam.T_IC = T_CI.inverse();
+      cam.has_T_IC = true;
+    }
     cams.push_back(cam);
   }
   if (cams.empty()) throw std::runtime_error(path + ": no cam0 entry");
   return cams;
+}
+
+KalibrCamera loadEurocCamera(const std::string& sensor_yaml) {
+  const YAML::Node n = YAML::LoadFile(sensor_yaml);
+  const auto res = n["resolution"].as<std::vector<int>>();
+  std::string distortion = n["distortion_model"].as<std::string>();
+  if (distortion == "radial-tangential") distortion = "radtan";
+  KalibrCamera cam;
+  const std::string dir = sensor_yaml.substr(0, sensor_yaml.find_last_of('/'));
+  cam.name = dir.substr(dir.find_last_of('/') + 1);
+  cam.model = makeKalibrCamera(n["camera_model"].as<std::string>(), distortion,
+                               n["intrinsics"].as<std::vector<double>>(),
+                               n["distortion_coefficients"].as<std::vector<double>>(), res.at(0),
+                               res.at(1));
+  cam.model_name = n["camera_model"].as<std::string>() + "-" + distortion;
+  const auto data = n["T_BS"]["data"].as<std::vector<double>>();
+  Eigen::Matrix4d T;
+  for (int i = 0; i < 16; ++i) T(i / 4, i % 4) = data.at(i);
+  cam.T_IC = Sophus::SE3d(Sophus::makeRotationMatrix(T.topLeftCorner<3, 3>()), T.topRightCorner<3, 1>());
+  cam.has_T_IC = true;
+  return cam;
 }
 
 ImuNoise loadKalibrImu(const std::string& path) {

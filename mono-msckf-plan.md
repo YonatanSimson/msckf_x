@@ -12,7 +12,7 @@ Updated as work progresses. Decisions that changed a section below are recorded 
 | 2026-10-10 | 0 | Basalt cross-check, simulator, RK4 nominal propagation | 2f44cf0 |
 | 2026-10-10 | 0 | Evaluation harness (`msckf_eval`) | 3ee5177 |
 | 2026-10-10 | 0 | Omni-radtan model (shared radtan code), AprilGrid detector and `calib_reproj` (`msckf_calib`), TUM-VI reprojection gate, `python/` tools. Stage 0 complete | b1883a8 |
-| 2026-10-10 | 1a | Static initialization, `static_init_eval`, EuRoC IMU reader; gate scripts (`scripts/`, `python/msckf_gates/`) | (pending) |
+| 2026-10-10 | 1a | Static initialization, `static_init_eval`, EuRoC IMU reader; gate scripts (`scripts/`, `python/msckf_gates/`) | 08ffd04 |
 
 Stage 0 gate status:
 
@@ -35,6 +35,7 @@ Stage 1 gate status:
 
 - `scripts/data/fetch_tumvi.sh` and `scripts/data/fetch_euroc.sh` download, verify and extract the datasets.
 - `scripts/run_gates.sh` builds, runs the unit tests and every gate checker (`python/msckf_gates/`, also installed as `gate-<name>` commands). Each gate writes its outputs and `gate_out/<gate>/report.md`, with a PASS/FAIL table and the ungated diagnostics.
+- `scripts/run_benchmarks.sh` re-runs everything (unit tests, every gate, `tracker_compare`) into a fresh `~/benchmark/<YYYY-MM-DD_HHMMSS>/<benchmark>/` (root: `-r` or `$MSCKF_BENCHMARK_ROOT`), with a manifest (commit, dirty files) and the uncommitted diff, so every score is traceable to the code that produced it. Each benchmark writes `metrics.json` (value and better direction per metric; gates also their thresholds and pass/fail). `python/benchmark_compare.py` then compares with the previous run and writes `compare.md`: REGRESSION (a gate or check went from pass to fail), DEGRADED / IMPROVED (a metric moved by more than 2 % in its worse / better direction). The script exits non-zero on any failure or degradation.
 
 Data lives in `~/data` ($MSCKF_DATA; overflow `/mnt/c/Users/user/data`, $MSCKF_DATA_LARGE), never in the repo:
 
@@ -54,6 +55,8 @@ Build a monocular camera + IMU MSCKF in C++17, clean-room from papers only, in g
 - Trawny & Roumeliotis, indirect Kalman filter report: reference for the JPL error-state algebra being translated.
 
 **Clean-room rule:** GPL code (OpenVINS, VINS-Mono, ORB-SLAM3) is never opened while implementing. Permissively licensed libraries (Basalt, GTSAM, COLMAP, OpenSfM) may be read for mechanics: data structures, numerical tricks, test patterns.
+
+Local reference checkouts in `~/work`, licenses checked: `gtsam` (simplified BSD; pinned at a74146dbe, built test-only by `scripts/deps/build_gtsam.sh`), `basalt` (BSD-3), `OKVIS2-X` (BSD-3 core; its `external/` and `supereight2` keep their own licenses, checked per file before reading), `kalibr` (BSD-3, except `ethz_apriltag2`, which is not read). Papers: Forster et al., on-manifold preintegration (arXiv 1512.02363v3).
 
 **Out of scope for v1:** SLAM features kept in the state, and the square-root filter form. Loop closure (Stage 4) and GNSS (Stage 5) come only after VIO passes its gates; until then, the system runs fully GNSS-denied.
 
@@ -205,7 +208,114 @@ Run on simulation (50 seeds per scenario), EuRoC and TUM-VI (left camera only), 
 
 Gate split (decided at the start of Stage 1): condition 3 needs the filter, which is Stage 3. So the Stage 1 gate covers everything measurable against ground truth at hand-off: conditions 1 and 2, gravity, velocity and scale error, initial NEES and runtime. The success rate with condition 3 (VIO ATE over the next 10 s) is re-run, and gated, once Stage 3 exists; the targets below stay as they are.
 
-Build order: 1a static init (needs only the IMU, plus the tracker's median disparity when available), IMU preintegration (cross-checked against GTSAM's formulas), a minimal KLT tracker on our camera models that feeds bearings and disparity to the initializer (sqrtVINS style; the Stage 2 front end replaces it), then 1b: linear solve, refinement, excitation gate.
+Build order: 1a static init (needs only the IMU, plus the tracker's median disparity when available), IMU preintegration (cross-checked against GTSAM), a minimal KLT tracker on our camera models that feeds bearings and disparity to the initializer (sqrtVINS style; the Stage 2 front end replaces it), then 1b: linear solve, refinement, excitation gate.
+
+IMU preintegration (`include/msckf/imu/preintegration.h`), decided in implementation:
+
+- Forster et al. (T-RO 2017): ΔR, Δv, Δp in the frame at t_i, bias Jacobians for the first-order bias correction, and the 9×9 covariance in the filter's order (δθ, δp, δv, all in frame i; GTSAM's covariance uses body-frame p, v errors and is rotated for comparison).
+- Two step schemes. `kForster` rotates each step's acceleration with ΔR at the step start, as the paper and GTSAM do. That ignores the rotation within the step and is first order: 1.6 mm position error after 1 s of handheld motion at 400 Hz, 14 mm under fast rotation, comparable to the IMU noise over the same window. `kMidpoint` (default) uses ΔR Exp(ω dt / 2), with the half-step rotation carried into the error and bias Jacobians: second order, 10 µm and 78 µm. `kForster` is kept for the GTSAM cross-check.
+- `integrateRange` averages the two samples bounding each interval, linearly interpolated at clipped ends.
+- Tests: exact simulator states predicted (both schemes, convergence order 2 vs 1 measured), bias Jacobians vs finite differences (3e-7), covariance vs 500 Monte Carlo runs (NEES in band), and `kForster` against GTSAM's ManifoldPreintegration step for step (`test_preintegration_gtsam`, built when GTSAM is found).
+
+Minimal KLT tracker (feeds bearings and disparity to the initializers; the Stage 2 front end replaces it): OpenCV pyramidal LK, forward-backward check, Shi-Tomasi grid detection masked by the camera model's valid region, and RANSAC on unit bearings with angular residuals. Evaluation, decided before implementation:
+
+| Layer | Data | Ground truth | Measures |
+| --- | --- | --- | --- |
+| Exact multi-frame | TartanAir v2 (CC BY 4.0), left-front pinhole 640×640, 10 Hz: RetroOffice easy/hard, Office hard, OldTownFall easy/hard, OldTownNight hard, AmericanDiner hard | Depth + poses: each feature's true position in every later frame, with occlusion and depth-edge checks (corners often sit on depth edges, where interpolated depth is not trustworthy; such features are excluded and counted) | Pixel error vs track age (drift), accepted-but-wrong rate, RANSAC precision/recall on real failures |
+| Real single step | KITTI Flow 2015 (CC BY-NC-SA, evaluation only), 200 training pairs | LiDAR flow, 10 → 11 | End-point error and outlier rate on real driving images |
+| Real long tracks | EuRoC MH_01–05 and TUM-VI room1, cam0 and cam1 each as a mono sequence; later KITTI odometry and KITTI-360 fisheye | Ground-truth camera poses (mocap pose + extrinsics) | Triangulation residual of each track (≥ 5 observations), pairwise angular epipolar error, outlier rate, each above a noise floor measured on AprilGrid corners (TUM-VI calib-cam1) |
+| Statistics | All of the above | none | Track length (median, survival), features per frame, coverage, runtime |
+| Disparity for init | EuRoC still windows (static-init gate) | IMU stationarity + ground-truth motion | Separation of still and moving windows by median disparity |
+
+A rendered ray-caster (exact truth for every camera model) was considered and dropped as overkill: TartanAir gives exact truth on realistic images, its toolkit can re-render Double Sphere and EUCM if needed, and the fisheye models are covered by the real-data layers. Datasets come from `scripts/data/fetch_tartanair.sh` and `fetch_kitti_flow.sh`.
+
+Primary tracker goal (user, 2026-10-11): **track each feature as long as realistically possible, with few drop-and-rediscover events.** Measured on TartanAir, where depth and poses give each feature's true visible span (in the valid region, not occluded), followed past the track's death:
+
+- **Completeness:** tracked length / visible length per track.
+- **Premature loss:** ended tracks whose point was still visible, by cause (LK failure, left valid region, forward-backward, RANSAC). The tracker reports every dropped feature with its reason.
+- **Re-detection rate:** new detections whose 3D point projects within 2 px of a dropped, still visible track's point (a duplicate landmark for the filter).
+- **Overtracked:** tracks followed past their point's visibility (tracking the wrong thing).
+
+First measurement (RetroOffice easy P000, default settings): median tracked length 1 frame against 7 visible, completeness median 0.25, 75 % of ended tracks premature (mostly the 0.5 px forward-backward check), 18 % of new tracks re-detections. Settings are tuned with `python/tracker_sweep.py`, which reports these metrics next to the accuracy guards (gross errors beyond the floor) for a grid of settings.
+
+Findings that shaped the evaluation:
+
+- **TartanAir's truth is not sub-pixel exact.** An oracle (each detection patch aligned straight into the later frame, starting at the true pixel, no tracker involved) disagrees with the depth/pose truth by a median of 0.45 px after one frame and 1.1 px after five, the same as the tracker. Pose timing, depth scale, focal length and principal point were checked and are not the cause; the rendered images and the geometry simply disagree at that level. TartanAir is therefore judged relative to the oracle floor, never in absolute pixels.
+- **Real data with pose ground truth only** (EuRoC, TUM-VI): the triangulation residual mixes tracker, ground-truth and calibration error. On TUM-VI the floor is measured with AprilGrid corners (exact static points) on calib-cam1 through the same ground truth: median 0.38 px, p99 1.2 px, against KLT's 0.77 px and 9.4 px on the same sequence. EuRoC has no such board in the Machine Hall; its residuals are reported, not gated. A camera-to-ground-truth time offset was ruled out (0 ms is a sharp minimum).
+- **KITTI Flow**: the ground truth is semi-dense, so sampling uses all four neighbours when valid and otherwise inverse-distance weighting within 1.5 px (requiring four valid neighbours left ~5 % of features evaluable).
+- **Robust estimation:** LO-MSAC (MSAC scoring, local optimization by iterated reweighted least squares) replaces plain RANSAC: mean F1 0.973 vs 0.937 with 50 % outliers and noise near the threshold. MAGSAC++ is the next step if a gap remains.
+- **Track length on real data is observation-weighted.** The baseline per-track median on EuRoC was 2–5 frames although only ~6 of 200 features are replaced per frame (a typical live feature lasts ~35 frames): the per-track median counts every weak detection that dies within a frame or two. The gate uses the median over observations of the length of the track each belongs to (how long the tracks feeding the filter are), and reports the per-track median with the share of tracks dying within 2 frames.
+- **Optional drift layer:** MPI Sintel (exact dense flow and occlusion masks for every consecutive pair) would give an exact multi-frame drift measurement by chaining flow, with RANSAC off (non-rigid scenes). Not yet adopted.
+
+Goal refined (user, 2026-10-11): **a high number of stable tracks.** Long tracks alone are not enough; the filter needs many of them, spread over the image, at every frame.
+
+Tuning sweep (`tracker-sweep`, TartanAir P000 of the 7 sets; forward-backward 1 px, LO-MSAC 1 px unless noted):
+
+| Setting | Completeness median / mean | Premature loss | Re-detected | Gross (> floor + 2 px) |
+| --- | --- | --- | --- | --- |
+| Defaults (3 levels, block 3) | 0.33 / 0.49 | 70 % | 27 % | 4.7 % |
+| 4 pyramid levels (5: identical) | 0.43 / 0.51 | 67 % | 23 % | 3.7 % |
+| + constant-velocity prediction | 0.42 / 0.51 | 68 % | 24 % | 3.4 % |
+| + Shi-Tomasi block 7 | 0.50 / 0.54 | 64 % | 20 % | 3.8 % |
+| + block 11 | 0.50 / 0.54 | 64 % | 17 % | 4.0 % |
+| + block 11, quality 0.05 | 0.50 / 0.57 | 61 % | 16 % | 4.0 % |
+
+A 31 px LK window was worse. Overtracking rises to ~4 % at quality 0.05. The plateau is the translation-only, raw-intensity, frame-to-frame LK model: ~60 % of ended tracks still die while their point is visible, 74 % of forward-backward drops happen on the first step after detection (median round trip 7.5 px), and gross errors stay ~4 % (gate: 2 %).
+
+**Head-to-head against Basalt (decided 2026-10-11): if Basalt's tracker is better, use it** (BSD-3). Basalt's frame-to-frame flow differs on exactly the weak points above: an SE2 warp on a sparse 52-point patch, mean-normalized intensities (gain invariant), inverse-compositional Gauss-Newton, a 0.3 px forward-backward check, and one FAST corner per empty 50 px cell.
+
+- **Method:** Basalt's own code runs unmodified, not a re-implementation. A hand adaptation was written and discarded in favour of this. The local Basalt checkout's pybind11 module (`src/python/basalt_pybind.cpp`, built with `BASALT_BUILD_PYTHON_BINDINGS=ON`) gains `basalt.OpticalFlow(model, params, width, height, config)`. It wraps `OpticalFlowFactory` (VioConfig defaults, any field overridable) through Basalt's own input and output queues; `process(t_ns, image)` returns the live keypoint ids and pixels. A committed script runs it over a sequence and writes the tracks. A replay mode in `tracker_eval` then scores them with exactly the evaluation used for our tracker. Basalt does not report why a track died, so its drop causes are "unknown". `tracker_eval` and `KltTracker` already share a `FeatureTracker` interface (`include/msckf/vision/feature_tracker.h`), which the replay plugs into.
+- **Fairness:** both trackers are run at Basalt's defaults and at a matched feature budget (Basalt's 50 px grid gives ~144 cells on 640×640, against our 200 features; a 40 px grid gives ~256). Our tracker is run at defaults and at the best sweep setting. The same images and the same valid-region mask are used for both.
+- **Status (2026-10-11):** the binding is built (`~/work/basalt`, build dir `build/relwithdebinfo` configured with `BASALT_BUILD_SHARED_LIB=OFF`, because the shared libbasalt cannot link vcpkg's non-PIC static ffmpeg) and tested (`test/python/test_basalt_pybind.py`: a known 2.3 / -1.7 px Fourier shift tracked to < 0.05 px RMS). It also exposes Basalt's AprilGrid detector (`detect_aprilgrid`, `aprilgrid_corners_3d`). Instead of a replay mode in `tracker_eval`, both trackers write the same `tracks.csv` (`tracker_eval tracks`, and the Basalt runner in `python/tracker_compare.py`) and one Python scorer computes every metric.
+- **How Basalt detects:** only to spawn tracks. After tracking, FAST runs only in grid cells without a live point, one corner per empty cell (threshold 40 halved down to 5); live tracks are never re-detected and a lost track is never recovered. `frame_to_frame` aligns against the previous frame's patch, starting at the previous position (no motion prediction); Basalt's `patch` flow aligns against the patch from the detection frame (no accumulation) and is scored too.
+
+Comparison metrics, chosen for the refined goal. Every one is reported per tracker, per sequence, on TartanAir (with truth) and on EuRoC / TUM-VI cam0 and cam1 (statistics only):
+
+| Question | Metric | How |
+| --- | --- | --- |
+| How many stable tracks? | Stable tracks per frame | Median over frames of live features with age ≥ 5 and ≥ 10; on TartanAir only those still within floor + 2 px of truth |
+| How well spread are the detections? | Cell coverage | Share of the valid region's cells (8×8 grid; a cell counts if ≥ 50 % valid) holding ≥ 1 live feature, median over frames; separately for all features and for stable (age ≥ 5) ones |
+|  | Evenness | Normalized entropy of features per cell (1 = perfectly even), median over frames |
+|  | Detection placement | Share of new detections landing in empty cells vs next to live features (≤ min. distance), the latter being wasted budget |
+| How long do tracks survive? | Survival curve | Kaplan–Meier estimate of P(track age ≥ k), tracks alive at sequence end censored; reported: median survival and survival at 5, 10, 20 frames |
+|  | Observation-weighted length | Median length of the track each observation belongs to |
+|  | Completeness, premature loss, re-detection, overtracking | As defined above (TartanAir) |
+| Are the tracks right? | Accuracy guard | Gross-error share and excess over the oracle floor (TartanAir); triangulation residual against the AprilGrid floor (TUM-VI) |
+| Cost | Runtime | ms per frame, same machine, single thread for both |
+
+Decision rule: adopt Basalt's tracker if it gives more stable tracks per frame and longer survival at no worse coverage, and passes the accuracy guards. If it wins on survival but loses on coverage, adopt its tracking and keep our grid detection. Either way the result and the chosen settings are recorded here.
+
+**Drift truth on real images: TUM-VI calib-imu1–4** (static AprilGrid, 20 Hz, fast excitation motion; the calib-cam sequences are only 4 Hz). Basalt's detector gives the corners of every frame; with the published pinhole-equi calibration (Basalt's kb4) their bearings give each frame's board-to-bearing homography (DLT on unit bearings, corners > 1 px refitted out, frames with fit RMS > 0.5 px dropped; median fit 0.09 px). A feature inside the detected board is mapped to board coordinates in its first such frame and predicted in every later one; drift is the pixel distance to that prediction. The floor is the same scoring on the detected corners themselves. Two failure modes are separated:
+
+- **Aliasing:** the grid repeats (pitch ~33 px in the image), and with no motion prediction a tracker whose search starts more than half a pitch from the truth converges on the same pattern on the neighbouring tag. Traced (Basalt track 2270, calib-imu1 frames 228→229): the board moved 19 px up, the track 13.7 px down, landing exactly one tag row off. Counted as a track whose board offset is within 0.2 pitch of a non-zero multiple of the pitch. Natural scenes rarely repeat like this, so aliasing is reported separately from gradual drift.
+- **Grid corners:** FAST does not fire on the AprilGrid's X-junctions, Shi-Tomasi does (Basalt's nearest feature to a corner is ≥ 3.2 px away, ours median 0.3 px). Drift at corners is therefore only defined for our tracker; the board-wide homography truth covers both.
+
+Results (`python/tracker_compare.py`, 2026-10-11; medians over sequences, cam0 and cam1 each a sequence; Basalt with its shipped TUM-VI / EuRoC config, also used for TartanAir):
+
+| Data | Tracker | Coverage (stable) | Evenness | Survive ≥ 5 frames | Die within 2 | Drift > 1 px | Aliased | Error at age 5 / 20 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| calib-imu1–4 | ours | 66 % (59 %) | 0.82 | 39 % | 53 % | 61 % | 7.5 % | 0.26 / 0.58 px |
+| | Basalt | 80 % (63 %) | 0.90 | 25 % | 70 % | **2.1 %** | 22 % | **0.07 / 0.15 px** |
+| | floor (corners) | | | | | 2.6 % | 0 | 0.08 / 0.10 px |
+| room1 | ours | 80 % (50 %) | 0.89 | 35 % | 55 % | | | |
+| | Basalt | 86 % (60 %) | 0.93 | 22 % | 71 % | | | |
+| EuRoC MH_01–05 | ours | 78 % (70 %) | 0.90 | 42 % | 48 % | | | |
+| | Basalt | **98 % (81 %)** | 0.96 | 21 % | 72 % | | | |
+| TartanAir (7 × P000) | ours | 83 % (13 %) | 0.94 | 8 % | 81 % | | | |
+| | Basalt | 95 % (0 %) | 0.96 | 0.6 % | 96 % | | | |
+
+- **Spread:** Basalt wins everywhere (one FAST corner per empty cell). Our tuned setting (quality 0.05) loses a third of the coverage.
+- **Accuracy:** Basalt's tracks barely drift: at the AprilGrid floor through age 20, and 2 % exceed 1 px against 61 % of ours. Its losses are aliasing jumps (22 %, a repeating-pattern effect) rather than drift.
+- **Survival:** ours lives longer on every dataset; Basalt's 0.2 px forward-backward limit discards anything uncertain (70 % of its tracks die within 2 frames). On TartanAir (10 Hz; median motion 16–49 px per frame, p90 up to 85 px, against 3 px on EuRoC and 13 px on room1) Basalt keeps almost nothing: without motion prediction the search starts outside its convergence range. Gyro-aided prediction (deferred, user 2026-10-11: "this will come later when we want to squeeze more out of Basalt") targets exactly this and the aliasing.
+- Runtime per frame: Basalt 4–9 ms, ours 9–14 ms (same machine, Basalt via its module with TBB).
+
+**Decision (user, 2026-10-11): adopt Basalt's front end, then compare it with sqrtVINS's and try to improve on it.**
+
+- **Adoption by vendoring:** Basalt's flow (frame-to-frame and patch variants, the patch alignment, grid FAST detection, the image pyramid) is copied into `src/vision/` under BSD-3 with attribution, behind `FeatureTracker`, without TBB or vcpkg. Gate: identical ids and pixels to the unmodified Basalt module on the same sequences.
+- **sqrtVINS (LGPL-3.0): paper only.** Its code is never opened (user: "don't look at sqrtVINS code. Just the paper"); only the license file was checked. Its front end is re-implemented clean-room from the paper (Peng, Chen, Wu, Huang, T-RO 2025, arXiv 2510.10346) as another `FeatureTracker` and scored with the same metrics.
+- **Vendored (2026-10-11):** `include/msckf/vision/basalt_flow.h`, `src/vision/basalt_flow.cpp` (`BasaltFlowTracker`; frame_to_frame and patch, patterns 24/50/51/52, optional valid-region mask). basalt-headers (image, pyramid; byte-identical to Basalt's) moved from test-only to a build dependency. `python/basalt_flow_check.py` gates it against the unmodified module on one sequence per dataset (500 frames): points are matched by position within each frame (not by id, since one point dropped in only one run shifts every later id), and at most 0.1 % of either run's points may lack a partner within 0.01 px. frame_to_frame (adopted) passes everywhere, ≤ 0.02 % unmatched; TartanAir exactly. Not bit-identical: float evaluation order differs (Basalt's -O3 -march=native alone does not reproduce it). Patch mode is reported, not gated: up to 0.6 % unmatched on EuRoC, whole points a median 14 px away, from frame 15 on; its fixed templates make one borderline forward-backward decision persist. Consistent with float sensitivity, unproven; to be resolved if patch mode is ever adopted.
+- `tracker_compare` variant `vendored` runs it, so the adopted tracker is in every benchmark run; `python/play_tracks.py` plays a TUM-VI recording with its tracks (imshow).
+- **Improvements** are measured on top of the vendored Basalt flow. Gyro-aided prediction is deferred until we want to squeeze more out of Basalt (user, 2026-10-11).
 
 | Metric | How | v1 target |
 | --- | --- | --- |
@@ -243,7 +353,7 @@ Measured on simulation (exact ground-truth projections, with injected outliers),
 | Metric | How | v1 target |
 | --- | --- | --- |
 | Tracking accuracy | Pixel error vs ground-truth projection on simulation | RMSE < 0.3 px |
-| Track length | Median frames per track, and share reaching window length | Median ≥ 8 at 20 Hz on EuRoC |
+| Track length | Observation-weighted median frames per track (see Stage 1 notes), and share reaching window length | Median ≥ 8 at 20 Hz on EuRoC |
 | Coverage | Share of grid cells with a live track; share of tracks with ray angle > 60° on fisheye | > 70% of cells; periphery not empty |
 | Outlier rate after RANSAC | Tracks above a ground-truth angular-error threshold | < 2% |
 | RANSAC precision and recall | Against injected outlier labels on simulation | Both > 95% |
@@ -454,7 +564,7 @@ From Stage 4, GTSAM (BSD-3) is also linked, for the iSAM2 pose graph and the GNS
 **Reference implementations for mechanics (read, don't copy):**
 
 - **Basalt:** camera model formulas and validity checks, patch optical flow, IMU preintegration.
-- **GTSAM:** preintegration math and Lie-group utilities, as a cross-check for the initialization factors.
+- **GTSAM:** preintegration math and Lie-group utilities, as a cross-check for the initialization factors. Built once from the local checkout by `scripts/deps/build_gtsam.sh` (system Eigen, no -march=native, no Boost/TBB) and found with `-DGTSAM_DIR`; only `test_preintegration_gtsam` links it until Stage 4.
 - **COLMAP:** robust triangulation checks and RANSAC infrastructure.
 - **OpenSfM:** fisheye camera handling and bearing-based geometry.
 

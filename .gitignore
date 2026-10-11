@@ -25,3 +25,15 @@ calib_out/
 gate_out/
 
 *.egg-info/
+
+# Tracker setting sweeps (python/tracker_sweep.py)
+sweep_out/
+
+# Tracker comparison against Basalt (python/tracker_compare.py)
+tracker_compare_out/
+
+# Vendored Basalt flow check and track playback (python/basalt_flow_check.py, play_tracks.py)
+basalt_flow_check_out/
+tracker_viz_out/
+
+sweep.log

@@ -1,5 +1,7 @@
 #include "msckf/calib/aprilgrid.h"
 
+#include "msckf/vision/image.h"
+
 #include <opencv2/imgproc.hpp>
 #include <yaml-cpp/yaml.h>
 
@@ -36,14 +38,6 @@ AprilGrid AprilGrid::fromKalibrYaml(const std::string& path) {
   return g;
 }
 
-cv::Mat toGray8(const cv::Mat& image) {
-  cv::Mat gray = image;
-  if (gray.channels() == 3) cv::cvtColor(gray, gray, cv::COLOR_BGR2GRAY);
-  if (gray.depth() == CV_16U) gray.convertTo(gray, CV_8U, 1.0 / 256.0);
-  if (gray.type() != CV_8UC1) throw std::runtime_error("toGray8: unsupported image type");
-  return gray;
-}
-
 struct AprilGridDetector::Impl {
   apriltag_family_t* family = nullptr;
   apriltag_detector_t* detector = nullptr;
@@ -76,7 +70,7 @@ AprilGridDetector::AprilGridDetector(const AprilGrid& grid, const AprilGridDetec
 AprilGridDetector::~AprilGridDetector() = default;
 
 GridObservation AprilGridDetector::detect(const cv::Mat& image_in) const {
-  const cv::Mat image = toGray8(image_in);
+  const cv::Mat image = vision::toGray8(image_in);
   // Each tag's outer black edge meets the grid's small corner squares at
   // X-junctions, so after thresholding the tag border and its four squares form
   // one black blob whose outline is not a quad, and apriltag (which fits quads

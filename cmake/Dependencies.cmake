@@ -13,6 +13,20 @@ add_library(sophus INTERFACE)
 target_include_directories(sophus SYSTEM INTERFACE ${sophus_SOURCE_DIR})
 target_compile_definitions(sophus INTERFACE SOPHUS_USE_BASIC_LOGGING)
 
+# basalt-headers (BSD-3), header-only: the image and pyramid used by the
+# vendored Basalt optical flow (src/vision/basalt_flow.cpp; its image/ headers
+# are byte-identical to the ones Basalt itself builds against), and reference
+# camera models for the Stage 0 cross-check tests.
+FetchContent_Declare(basalt_headers
+  URL https://github.com/VladyslavUsenko/basalt-headers-mirror/archive/b7f915b195c87c8373bf93f97a0710bcdaffd718.tar.gz
+  URL_HASH SHA256=165cb202c1e499684b231fa33ee984567eeceb3df6f036cd4c3d5d46ad5375d0
+  SOURCE_SUBDIR do-not-add
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(basalt_headers)
+add_library(basalt_headers INTERFACE)
+target_include_directories(basalt_headers SYSTEM INTERFACE ${basalt_headers_SOURCE_DIR}/include)
+target_link_libraries(basalt_headers INTERFACE Eigen3::Eigen sophus)
+
 if(MSCKF_BUILD_TESTS)
   # GoogleTest (BSD-3).
   FetchContent_Declare(googletest
@@ -21,23 +35,11 @@ if(MSCKF_BUILD_TESTS)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
-
-  # basalt-headers (BSD-3), test-only: reference camera models for the Stage 0
-  # cross-check. Header-only; populate and expose the include dir.
-  FetchContent_Declare(basalt_headers
-    URL https://github.com/VladyslavUsenko/basalt-headers-mirror/archive/b7f915b195c87c8373bf93f97a0710bcdaffd718.tar.gz
-    URL_HASH SHA256=165cb202c1e499684b231fa33ee984567eeceb3df6f036cd4c3d5d46ad5375d0
-    SOURCE_SUBDIR do-not-add
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-  FetchContent_MakeAvailable(basalt_headers)
-  add_library(basalt_headers INTERFACE)
-  target_include_directories(basalt_headers SYSTEM INTERFACE ${basalt_headers_SOURCE_DIR}/include)
-  target_link_libraries(basalt_headers INTERFACE Eigen3::Eigen sophus)
 endif()
 
 # --- Calibration tools (msckf_calib): OpenCV, apriltag, yaml-cpp -------------
 
-find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs calib3d highgui)
+find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs calib3d highgui video)
 
 # apriltag (BSD-2). Its own CMake forces shared libs, examples and install
 # rules, so build a static target from the sources we need.

@@ -1,6 +1,7 @@
 """Shared helpers for the gate checkers: paths, running the C++ tools, and a
 pass/fail table that is printed and written to <out>/report.md."""
 import csv
+import json
 import math
 import os
 import shlex
@@ -103,10 +104,32 @@ class GateReport:
             lines += ["", "Not gated:", ""] + [f"- {n}" for n in self.notes]
         return "\n".join(lines) + "\n"
 
+    def metrics(self):
+        """Machine-readable checks for python/benchmark_compare.py: each value,
+        its threshold, and which direction is better (from the check's op)."""
+        return [{"name": c.name, "value": c.value, "unit": c.unit, "op": c.op, "threshold": c.threshold,
+                 "better": "lower" if c.op in ("<=", "<") else "higher", "passed": c.passed}
+                for c in self.checks]
+
     def finish(self, out_dir):
         md = self.markdown()
         (Path(out_dir) / "report.md").write_text(md)
+        write_metrics(out_dir, self.metrics(), passed=self.passed)
         print()
         print(md)
         print(f"report: {Path(out_dir) / 'report.md'}")
         return 0 if self.passed else 1
+
+
+def write_metrics(out_dir, metrics, passed=None):
+    """<out_dir>/metrics.json: {"passed": bool|null, "metrics": [{name, value,
+    better: "lower"|"higher"|null, ...}]}, read by python/benchmark_compare.py."""
+
+    def plain(v):  # numpy scalars -> Python; NaN/inf -> null
+        if hasattr(v, "item"):
+            v = v.item()
+        return None if isinstance(v, float) and not math.isfinite(v) else v
+
+    clean = [{k: plain(v) for k, v in m.items()} for m in metrics]
+    doc = {"passed": plain(passed), "metrics": clean}
+    (Path(out_dir) / "metrics.json").write_text(json.dumps(doc, indent=1) + "\n")

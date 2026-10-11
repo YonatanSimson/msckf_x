@@ -43,17 +43,42 @@ for b in "${bundles[@]}"; do
     curl -fSL --progress-bar -A "Mozilla/5.0" -o "$b.zip.part" "${url[$b]}"
     mv "$b.zip.part" "$b.zip"
   fi
-  unzip -tq "$b.zip"  # integrity (CRC) check; the record publishes no checksums
+  if [ ! -f "$b.zip.verified" ]; then
+    unzip -tq "$b.zip"  # integrity (CRC) check; the record publishes no checksums
+    touch "$b.zip.verified"
+  fi
   # Inner ASL zips, e.g. machine_hall/MH_01_easy/MH_01_easy.zip -> ./MH_01_easy.zip
   unzip -q -o -j "$b.zip" "$b/*/*.zip" -d .
   for z in $(unzip -Z1 "$b.zip" "$b/*/*.zip" | xargs -n1 basename); do
     s="${z%.zip}"
-    mkdir -p "$s"
     if [ "$imu_only" -eq 1 ]; then
-      unzip -q -o "$z" 'mav0/imu0/*' 'mav0/state_groundtruth_estimate0/*' -d "$s"
+      members=('mav0/imu0/*' 'mav0/state_groundtruth_estimate0/*')
+      marker="$s/.complete-imu"
     else
-      unzip -q -o "$z" -d "$s"
+      members=('*')
+      marker="$s/.complete"
     fi
+    if [ -f "$marker" ] || [ -f "$s/.complete" ]; then
+      echo "$s: already extracted"
+      continue
+    fi
+    mkdir -p "$s"
+    # Writes to /mnt/c (9P) occasionally fail transiently ("write error (disk
+    # full?)" with plenty of space). unzip then exits non-zero; retry the
+    # whole sequence (overwriting) and only mark it complete after a clean run.
+    ok=0
+    for attempt in 1 2 3; do
+      echo "$s: extracting (attempt $attempt)"
+      if unzip -q -o "$z" "${members[@]}" -d "$s" </dev/null; then
+        ok=1
+        break
+      fi
+    done
+    if [ "$ok" -ne 1 ]; then
+      echo "$s: extraction failed after 3 attempts" >&2
+      exit 1
+    fi
+    touch "$marker"
     echo "$s: extracted to $dest/$s"
   done
 done

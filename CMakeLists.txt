@@ -27,6 +27,7 @@ add_library(msckf
   src/eval/report.cpp
   src/eval/timing.cpp
   src/eval/trajectory.cpp
+  src/imu/preintegration.cpp
   src/imu/propagation.cpp
   src/init/static_init.cpp
   src/io/euroc.cpp
@@ -41,6 +42,20 @@ target_compile_options(msckf PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(msckf_eval tools/msckf_eval.cpp)
 target_link_libraries(msckf_eval PRIVATE msckf)
 
+# Vision: image utilities, the minimal KLT tracker, bearing RANSAC. Grows into
+# the Stage 2 front end. Kept out of msckf so the estimator core does not
+# depend on OpenCV.
+add_library(msckf_vision
+  src/vision/basalt_flow.cpp
+  src/vision/bearing_ransac.cpp
+  src/vision/image.cpp
+  src/vision/feature_tracker.cpp
+  src/vision/klt_tracker.cpp
+)
+target_link_libraries(msckf_vision PUBLIC msckf ${OpenCV_LIBS} PRIVATE basalt_headers)
+target_include_directories(msckf_vision SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})
+target_compile_options(msckf_vision PRIVATE -Wall -Wextra -Wpedantic)
+
 # Calibration tools: AprilGrid detection, Kalibr I/O, per-image board fits.
 # Kept out of msckf so the estimator core does not depend on OpenCV.
 add_library(msckf_calib
@@ -48,12 +63,15 @@ add_library(msckf_calib
   src/calib/board_pose.cpp
   src/calib/kalibr_io.cpp
 )
-target_link_libraries(msckf_calib PUBLIC msckf ${OpenCV_LIBS} PRIVATE apriltag yaml-cpp::yaml-cpp)
+target_link_libraries(msckf_calib PUBLIC msckf msckf_vision ${OpenCV_LIBS} PRIVATE apriltag yaml-cpp::yaml-cpp)
 target_include_directories(msckf_calib SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})
 target_compile_options(msckf_calib PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(calib_reproj tools/calib_reproj.cpp)
 target_link_libraries(calib_reproj PRIVATE msckf_calib)
+
+add_executable(tracker_eval tools/tracker_eval.cpp)
+target_link_libraries(tracker_eval PRIVATE msckf_calib msckf_vision)
 
 add_executable(static_init_eval tools/static_init_eval.cpp)
 target_link_libraries(static_init_eval PRIVATE msckf_calib)

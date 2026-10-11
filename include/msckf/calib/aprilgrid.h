@@ -75,7 +75,4 @@ class AprilGridDetector {
   std::unique_ptr<Impl> impl_;
 };
 
-// Converts 16-bit images to 8 bits (high byte); 8-bit images pass through.
-cv::Mat toGray8(const cv::Mat& image);
-
 }  // namespace msckf::calib
