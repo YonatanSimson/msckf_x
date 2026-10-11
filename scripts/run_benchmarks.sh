@@ -13,7 +13,7 @@
 #                           against the previous run (python/benchmark_compare.py)
 #
 # BENCHMARK: unit_tests stage0_reprojection stage1a_static_init stage1_tracker
-# basalt_flow_check tracker_compare (default: all, in this order; stage1_tracker reads
+# stage1b_dynamic_init basalt_flow_check tracker_compare (default: all, in this order; stage1_tracker reads
 # stage1a_static_init's output from the same run). ROOT defaults to
 # $MSCKF_BENCHMARK_ROOT or ~/benchmark; AprilGrid detections for
 # tracker_compare are cached in ROOT/cache/corners. Data comes from
@@ -36,7 +36,7 @@ while getopts "r:b:h" opt; do
 done
 shift $((OPTIND - 1))
 benchmarks=("$@")
-[ ${#benchmarks[@]} -eq 0 ] && benchmarks=(unit_tests stage0_reprojection stage1a_static_init stage1_tracker basalt_flow_check tracker_compare)
+[ ${#benchmarks[@]} -eq 0 ] && benchmarks=(unit_tests stage0_reprojection stage1a_static_init stage1_tracker stage1b_dynamic_init basalt_flow_check tracker_compare)
 
 run="$root/$(date +%Y-%m-%d_%H%M%S)"
 mkdir -p "$run"

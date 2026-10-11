@@ -3,6 +3,7 @@
 #include "msckf/imu/imu_types.h"
 
 #include <Eigen/Core>
+#include <sophus/so3.hpp>
 
 namespace msckf {
 
@@ -29,5 +30,10 @@ struct ImuInitState {
   Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
   Matrix15d P = Matrix15d::Zero();
 };
+
+// Attitude R_GI with R_GI^T e_z = z (z: the unit "up" direction, opposite to
+// gravity, in the IMU frame) and the global x axis along the horizontal
+// projection of the IMU x axis (yaw = 0, the gauge of every initializer).
+Sophus::SO3d attitudeFromUp(const Eigen::Vector3d& z);
 
 }  // namespace msckf

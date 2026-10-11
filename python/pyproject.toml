@@ -22,13 +22,16 @@ play-euroc = "play_euroc:main"
 gate-stage0-reprojection = "msckf_gates.stage0_reprojection:main"
 gate-stage1a-static-init = "msckf_gates.stage1a_static_init:main"
 gate-stage1-tracker = "msckf_gates.stage1_tracker:main"
+gate-stage1b-dynamic-init = "msckf_gates.stage1b_dynamic_init:main"
 tracker-sweep = "tracker_sweep:main"
 tracker-compare = "tracker_compare:main"
 benchmark-compare = "benchmark_compare:main"
 play-tracks = "play_tracks:main"
+tune-init-noise = "tune_init_noise:main"
+kitti-raw-to-euroc = "kitti_raw_to_euroc:main"
 
 [tool.setuptools]
-py-modules = ["viz", "play_euroc", "tracker_sweep", "tracker_compare", "benchmark_compare", "play_tracks", "basalt_flow_check"]
+py-modules = ["viz", "play_euroc", "tracker_sweep", "tracker_compare", "benchmark_compare", "play_tracks", "basalt_flow_check", "tune_init_noise", "kitti_raw_to_euroc"]
 packages = ["msckf_gates"]
 
 [tool.black]

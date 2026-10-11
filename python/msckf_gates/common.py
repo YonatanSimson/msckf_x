@@ -163,3 +163,11 @@ def write_metrics(out_dir, metrics, passed=None):
     clean = [{k: plain(v) for k, v in m.items()} for m in metrics]
     doc = {"passed": plain(passed), "metrics": clean}
     (Path(out_dir) / "metrics.json").write_text(json.dumps(doc, indent=1) + "\n")
+
+
+def nees_band(n, dof):
+    """Two-sided 95 % band of the mean NEES of n independent chi2(dof) samples
+    (Wilson-Hilferty approximation of the chi2(n dof) quantiles, / n)."""
+    k = n * dof
+    c = 2.0 / (9.0 * k)
+    return k * (1 - c - 1.96 * math.sqrt(c)) ** 3 / n, k * (1 - c + 1.96 * math.sqrt(c)) ** 3 / n

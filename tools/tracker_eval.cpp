@@ -224,22 +224,7 @@ bool triangulate(const CameraModel& cam, const std::vector<Sophus::SE3d>& T_GC,
   return true;
 }
 
-calib::KalibrCamera loadCamera(const Args& a) {
-  calib::KalibrCamera kc;
-  if (!a.camchain.empty()) {
-    bool found = false;
-    for (const auto& c : calib::loadKalibrCamchain(a.camchain)) {
-      if (c.name == a.cam) {
-        kc = c;
-        found = true;
-      }
-    }
-    if (!found) throw std::runtime_error(a.cam + " not in " + a.camchain);
-  } else {
-    kc = calib::loadEurocCamera((fs::path(a.euroc) / "mav0" / a.cam / "sensor.yaml").string());
-  }
-  return kc;
-}
+calib::KalibrCamera loadCamera(const Args& a) { return calib::loadSequenceCamera(a.euroc, a.cam, a.camchain); }
 
 int runEuroc(const Args& a) {
   const calib::KalibrCamera kc = loadCamera(a);

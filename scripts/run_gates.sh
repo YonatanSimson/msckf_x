@@ -4,7 +4,7 @@
 #
 #   scripts/run_gates.sh [GATE...]
 #
-# GATE: stage0_reprojection, stage1a_static_init, stage1_tracker (default: all;
+# GATE: stage0_reprojection, stage1a_static_init, stage1_tracker, stage1b_dynamic_init (default: all;
 # stage1_tracker reads stage1a_static_init's output, so keep that order). Data comes
 # from scripts/data/fetch_tumvi.sh and scripts/data/fetch_euroc.sh. Python is
 # $MSCKF_PYTHON (default ~/.venv/msckf/bin/python, with python/ installed:
@@ -15,7 +15,7 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 build="${MSCKF_BUILD:-$repo/build}"
 python="${MSCKF_PYTHON:-$HOME/.venv/msckf/bin/python}"
 gates=("$@")
-[ ${#gates[@]} -eq 0 ] && gates=(stage0_reprojection stage1a_static_init stage1_tracker)
+[ ${#gates[@]} -eq 0 ] && gates=(stage0_reprojection stage1a_static_init stage1_tracker stage1b_dynamic_init)
 
 # The GTSAM cross-check test is built when scripts/deps/build_gtsam.sh has run.
 gtsam_dir="${GTSAM_DIR:-$repo/build-gtsam/install/lib/cmake/GTSAM}"

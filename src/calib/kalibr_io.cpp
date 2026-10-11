@@ -31,9 +31,10 @@ CameraModelPtr makeKalibrCamera(const std::string& camera_model, const std::stri
   const std::string name = camera_model + "-" + distortion;
   if (name == "pinhole-radtan") {
     requireSize(in, 4, name + " intrinsics");
-    requireSize(d, 4, name + " distortion");
+    // k1 k2 p1 p2, optionally k3 (KITTI's calibration has it).
+    if (d.size() != 5) requireSize(d, 4, name + " distortion");
     Eigen::VectorXd p(9);
-    p << in[0], in[1], in[2], in[3], d[0], d[1], d[2], d[3], 0.0;
+    p << in[0], in[1], in[2], in[3], d[0], d[1], d[2], d[3], d.size() == 5 ? d[4] : 0.0;
     return std::make_shared<PinholeRadtan>(width, height, p);
   }
   if (name == "pinhole-equi") {
@@ -121,8 +122,18 @@ KalibrCamera loadEurocCamera(const std::string& sensor_yaml) {
   return cam;
 }
 
+KalibrCamera loadSequenceCamera(const std::string& euroc_dir, const std::string& cam, const std::string& camchain) {
+  if (camchain.empty()) return loadEurocCamera(euroc_dir + "/mav0/" + cam + "/sensor.yaml");
+  for (const auto& c : loadKalibrCamchain(camchain)) {
+    if (c.name == cam) return c;
+  }
+  throw std::runtime_error(cam + " not in " + camchain);
+}
+
 ImuNoise loadKalibrImu(const std::string& path) {
-  const YAML::Node n = YAML::LoadFile(path);
+  // Flat (EuRoC sensor.yaml) or nested under imu0 (Kalibr imu-*.yaml results).
+  const YAML::Node root = YAML::LoadFile(path);
+  const YAML::Node n = root["imu0"] ? root["imu0"] : root;
   ImuNoise noise;
   noise.acc_noise = n["accelerometer_noise_density"].as<double>();
   noise.acc_bias_walk = n["accelerometer_random_walk"].as<double>();

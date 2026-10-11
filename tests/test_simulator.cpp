@@ -222,7 +222,7 @@ TEST_P(SimulatorTest, CameraObservationsMatchIndependentProjection) {
   }
 }
 
-TEST(SimulatorScenarios, CartIsPlanarWithExactStops) {
+TEST(SimulatorScenarios, CartIsPlanarWithExactStops) {  // and pushed: speed surges while moving
   const SplineTrajectory traj = makeScenario(Scenario::kCart, 120.0, 3);
   double max_speed = 0.0, max_dz = 0.0, stopped_time = 0.0;
   bool exact_stop_found = false;
@@ -239,7 +239,8 @@ TEST(SimulatorScenarios, CartIsPlanarWithExactStops) {
   std::cout << "[ info ] cart: max speed " << max_speed << " m/s, max |dz| " << max_dz
             << " m, exactly stationary " << stopped_time << " s of " << traj.maxTime() << " s\n";
   EXPECT_TRUE(exact_stop_found);
-  EXPECT_NEAR(max_speed, 1.0, 0.05);
+  // Cruise 1 m/s plus push surges of +-0.15 m/s.
+  EXPECT_NEAR(max_speed, 1.15, 0.05);
   EXPECT_LT(max_dz, 0.005);
 }
 

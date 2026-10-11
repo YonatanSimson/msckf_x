@@ -9,8 +9,9 @@ namespace msckf {
 
 enum class Scenario {
   kHandheld,      // rich excitation in a room
-  kCart,          // slow, planar, long constant-speed legs, exact stops, U-turns
+  kCart,          // slow, planar, pushed (+-0.15 m/s surges at 0.6 Hz), exact stops, U-turns
   kFastRotation,  // rotation rates up to ~5 rad/s, small translation
+  kCar,           // KITTI-like driving: 8-12 m/s cruise, braking for 90 deg turns, rolling start
 };
 
 std::string toString(Scenario scenario);

@@ -14,6 +14,8 @@ Updated as work progresses. Decisions that changed a section below are recorded 
 | 2026-10-10 | 0 | Omni-radtan model (shared radtan code), AprilGrid detector and `calib_reproj` (`msckf_calib`), TUM-VI reprojection gate, `python/` tools. Stage 0 complete | b1883a8 |
 | 2026-10-10 | 1a | Static initialization, `static_init_eval`, EuRoC IMU reader; gate scripts (`scripts/`, `python/msckf_gates/`) | 08ffd04 |
 | 2026-10-11 | 1 | IMU preintegration (GTSAM cross-check), minimal KLT tracker and its evaluation; Basalt flow adopted (vendored `BasaltFlowTracker`, checked against Basalt); `tracker_compare`; benchmark runner (`scripts/run_benchmarks.sh`, `~/benchmark/<date-time>/`) | 2be8886 |
+| 2026-10-11 | 1 | Stage 1 tracker gate on the vendored Basalt flow (FAIL: checkerboard aliasing on TartanAir, room1 > 2 px; deferred), TartanAir gross-error overlay | 7ca7e9d |
+| 2026-10-11 | 1b | Dynamic initialization (sqrtVINS paper: feature-less linear solve, refinement with landmarks, keyframes, scale gate), retry pipeline with static and in-place starts; sim car and pushed cart, KITTI raw; `dynamic_init_eval`, `play_init.py`. Stage 1b gate PASS | (uncommitted) |
 
 Stage 0 gate status:
 
@@ -194,6 +196,130 @@ For starts in motion, follow the two-step design in sqrtVINS (Peng, Chen, Huang,
 3. **Excitation gate.** Reject the solve if the smallest singular value of the linear system or the accelerometer excitation is below a threshold, and retry with a longer window. Mono scale is only observable through acceleration, so this gate matters most on the cart.
 
 The paper reports a high success rate with windows as short as 100 ms, tested on Jetson Nano as well as workstations. Treat that as the ceiling, not the v1 target.
+
+Implementation, step 1 (`include/msckf/init/featureless_init.h`, 2026-10-11), from the paper's Sec. V-A (Props. 1–2) only:
+
+- Unknowns v and g of the first frame's IMU, in that frame; biases and extrinsics taken as known (as in the paper). For each keyframe pair, the translation direction t is the smallest-eigenvalue eigenvector of Σ nnᵀ over the common features' epipolar normals (bearings rotated into {I0} by the gyro); the preintegrated camera displacement s t = (ΔT_k − ΔT_j) v + ½(ΔT_k² − ΔT_j²) g + (α_k − α_j) + (R_k − R_j) p_IC is projected onto the two other eigenvectors, removing s. (The paper's eq. 60 writes the (v, g) block as −A; reading it as +A flips gravity, which the noise-free test catches.)
+- Decisions the paper leaves open: all pairs of the given frames, pairs with < 10 common features skipped, normals not normalized (near-parallel bearings weigh little); the 6-unknown least-squares solution is followed by Gauss-Newton with |g| fixed (g on the sphere, like the paper's (α, β)).
+- Excitation gate: smallest singular value of the stacked system with unit-norm columns ≥ 1e-3, and accelerometer excitation ≥ 0.2 m/s², measured as the spread of the specific force rotated into {I0} (gravity is constant there). Thresholds provisional, to be set on the real-data evaluation.
+- Tests (`test_featureless_init`): exact without noise (gravity < 1e-3°, velocity < 1e-4 m/s); handheld with noise, 1 s windows, 50 starts over 5 seeds: all accepted, gravity error median 0.24° (p90 0.65°), velocity error median 0.032 m/s (p90 0.10 m/s); a constant-velocity window is refused (excitation 0.07 m/s²).
+
+Evaluation (`tools/dynamic_init_eval`, gate `stage1b_dynamic_init`, 2026-10-11): the paper's protocol (a start every 10 s, windows 0.1–1.0 s, each window starting at a frame), bearings from the adopted front end, left camera only; EuRoC with its ground-truth biases as the paper's "prior calibration", TUM-VI with zero bias (its IMU data is calibrated); velocity truth from differentiated poses for both. A run is *accurate* if accepted and gravity < 1°, velocity < 0.1 m/s or 10 %, scale < 5 % (scale: least-squares ratio of the window's keyframe-pair translations to ground truth, stricter than the paper's Sim(3) fit over 10 s of VIO). First result, **linear solve only (no refinement): FAIL** at the 1 s gate.
+
+| Data, 1 s window | Accepted | Accurate | Gravity / velocity / scale error (median, accepted) |
+| --- | --- | --- | --- |
+| Sim handheld (10 seeds) | 100 % | 75 % | 0.25° / 0.020 m/s / 1.7 % |
+| EuRoC MH_01–05 | 96 % | 40 % | 0.30° / 0.040 m/s / 6.1 % |
+| TUM-VI room1 | 100 % | 92 % | 0.34° / 0.033 m/s / 1.5 % |
+
+- At 1 s the medians meet the plan's targets except EuRoC's scale (6.1 % vs 5 %); the shares fail mostly on scale.
+- Short windows are far off (0.1–0.3 s: gravity 5–25°, scale errors of hundreds of %), as the paper says the linear solve alone is; its refinement step is what makes short windows work.
+- The excitation gate is too weak: the singular-value test accepts most of those bad short-window solutions. To be revisited with the refinement (a relative conditioning measure, or the refined covariance).
+- Cart (sim): rejected by the acceleration test in 98–100 % of runs, as intended (it starts on the static path). Fast rotation: gravity 1.25°, scale 48 % at 1 s; little translation for the direction t.
+- Runtime: 0.2–3 ms per solve (plan: < 5 ms on Orin; measured on the workstation).
+
+Step 2, refinement (`include/msckf/init/init_refinement.h`, 2026-10-11): one clone (R, p, v) per frame plus shared biases; every iteration relinearizes a prior on the first clone (loose tilt and velocity, tight yaw and position: the gauge) and on the biases, the IMU preintegration between consecutive clones as a residual, and the features (re-triangulated, null-space projected as in the MSCKF update, chi-square gated once with the first iterate's covariance, then fixed), and takes a Gauss-Newton step; covariance = inverse information at convergence. Decisions:
+
+- IMU as a relinearized measurement, not a prior propagated once: the propagated-once version stalled at 0.17° from a 5° start without noise; this one converges to 1e-4°. This is the iterated EKF update in information form; the paper's square-root form is a numerical choice we do not need.
+- Features are eliminated, not kept in the state (no SLAM features in v1); the hand-off is the IMU state at the last frame with its 15×15 covariance.
+- Gate decision frozen after the first iterate, 20 iterations, convergence 1e-5: the first version oscillated (features swapping in and out) or stopped short.
+- Simulation (`test_featureless_init`, biases drawn from the prior for a fair NEES): exact from a perturbed start without noise; 1 s windows gravity error median 0.60° (linear 0.88°, which cannot estimate the bias), NEES 7.82 in [7.24, 8.80]; 0.5 s: 0.67° (linear 2.09°), NEES 7.81, all converge. **0.3 s mono is not reliable**: a quarter of the runs converge to wrong solutions (2–12°) that fit as well as right ones and report ~1° of tilt sigma, so neither the cost nor the covariance can reject them.
+- Runtime is **open**: 180–390 ms per 1 s window on the workstation (dense ~200-state solves), against the plan's 50 ms on Orin. To be optimized (block-sparse structure) before Stage 3.
+
+**OKVIS2-X baseline** (read for mechanics, BSD): it has no dynamic initializer: attitude from the mean accelerometer reading (`ImuError::initPose`, i.e. assumes rest), velocity 0 under a speed prior, and its bundle adjustment corrects the start afterwards. ROVIO is similar (attitude from the accelerometer, velocity 0, features at a default inverse depth with large uncertainty, the iterated EKF converges with motion). `dynamic_init_eval` runs this start as method `okvis`: on moving starts its gravity error is 6.4° (sim), 1.9° (EuRoC), 16° (TUM-VI room1) and its velocity error is the full speed, which a filter cannot absorb the way a bundle adjustment can.
+
+**Gate realigned with the plan (2026-10-11).** The first gate combined gravity, velocity and *window* scale into one per-run "accurate" share. The plan defines success as conditions 1–2 (well-posed and through the excitation gate; refinement converges with a valid covariance; condition 3, VIO ATE, in Stage 3) and gravity, velocity and scale as separate metrics, scale being a Sim(3) fit over 10 s of VIO (Stage 3). The gate now checks, for the refined pipeline at 1 s: success rate ≥ 95 %, gravity median < 1°, velocity median < 0.1 m/s; window scale and the all-targets share are reported.
+
+| Refined, 1 s window | Success | Gravity / velocity (median) | Window scale (median) | All targets met |
+| --- | --- | --- | --- | --- |
+| Sim handheld | 100 % | 0.19° / 0.008 m/s | 0.7 % | 100 % |
+| EuRoC MH_01–05 | **89.6 % (FAIL)** | 0.28° / 0.035 m/s | 4.9 % | 46 % |
+| TUM-VI room1 | 100 % | 0.27° / 0.014 m/s | 0.3 % | 100 % (also at 0.5 s) |
+
+**Keyframes as in the paper (2026-10-11; goal restated by the user: "sqrtVINS style initialization. It is the most robust algorithm I tested").** The paper selects keyframes "based on the average parallax", 3 for a 0.1 s window and 5 for 0.5 s; we had used every frame. `selectKeyframes` now picks at most 5, first and last always, evenly spaced in cumulative mean rotation-compensated parallax, for both steps. Effect: refinement runtime 180–390 ms → 9–16 ms per window (workstation); simulation 1 s gravity median 0.56° (all frames: 0.60°), NEES 8.24 in band; gate at 1 s: sim 100 % / TUM-VI 100 % / **EuRoC 91.0 %** success (all frames: 89.6 %), gravity 0.19° / 0.28° / 0.23°, velocity 0.015 / 0.015 / 0.030 m/s. EuRoC's 6 failures: excitation gate 3, too few usable features for the refinement 3 (near-hover windows, little parallax). For reference, the paper's own mono success on EuRoC (with the VIO condition, 0.5 m) is 79.6 % at 0.1 s, 92.0 % at 0.5 s, 96.5–100 % at 0.75–1 s; on TUM-VI 93.8–100 %.
+
+**Features in the state, for initialization only (decided by the user, 2026-10-11: "keep features in the state like sqrtVINS - but only for initialization").** The refinement now estimates the landmarks jointly with the keyframe clones (global positions, triangulated once, then Gauss-Newton; eliminated per iteration by the Schur complement on their 3×3 blocks) and hands them to the filter with the IMU state and their joint covariance. The filter uses these landmarks only until they are lost and never adds others (Stage 3); the v1 rule of no SLAM features otherwise stands. Implementation decisions: two-phase chi-square gate (iterate with all landmarks until the step is < 1e-3, gate once there, converge to 1e-5 with the inliers; gating after one step from a 5° start rejected every feature); landmark convergence relative to distance. Results: noise-free from a 5° / 0.37 m/s start, state exact and 131 landmarks within 2e-5 m; Monte Carlo IMU NEES 8.24 and landmark NEES 3.00, both in their bands at 1 s (0.5 s: 7.98 / 2.59, in band); at 0.3 s most of the wrong solutions now fail to converge and are refused. Gate at 1 s: sim 100 %, TUM-VI 100 %, EuRoC 89.6 % (one more non-converging start than without landmarks). Runtime 15–38 ms per window on the workstation after removing two costs (joint-covariance products recomputed per landmark pair; `integrateRange` scanning the whole IMU log, now a binary search); the 50 ms Orin budget still needs measuring, and the dense per-landmark Jacobians are the next saving.
+
+**Retry pipeline, car scenario and the scale gate (2026-10-11).** `initializeDynamic` (`include/msckf/init/dynamic_init.h`): keyframes → linear → refinement, the window growing from 0.5 s by 0.25 s up to 5 s on refusal. Simulated KITTI-like `car` scenario (rolling start, 8–12 m/s, braking to 5 m/s for 90° turns, 10 Hz camera, 100 Hz IMU, street-corridor landmarks: `SimConfig::corridor_*`). The user reports sqrtVINS initializes their real cart well (OKVIS2-X only sometimes), so cart and car starts must initialize dynamically, not only at stops. Findings and decisions:
+
+- Priors on the first clone's tilt and velocity were centred on the linear solution (same data): with 1 m/s the car came out 3–5× overconfident. Now uninformative (0.5 rad, 10 m/s); handheld NEES unchanged.
+- The paper has no excitation gate; ours (0.2 m/s² specific-force spread) refused most car and cart windows outright. Removed from the pipeline, replaced by a **scale gate** on the refined hand-off: velocity sigma ≤ 30 % of the estimated speed. Mono scale collapses in weakly accelerated windows (scene and trajectory shrink together and still fit) and the absolute covariance at a collapsed scale looks confident; the relative one does not. Sim: below 30 % consistent (velocity NEES 2.0–2.9), above mostly collapsed (scale off > 20 % in 52 of 73). Real data: solutions above 30 % were still accurate, and 10 % refused good ones (EuRoC 61 %). No absolute floor: it admitted collapsed solutions that look stationary; stationary starts belong to static init.
+- Real-data consistency: on EuRoC/TUM-VI the confident solutions (σ_v < 10 % of speed) have velocity NEES 8.7 (3 dof): the noise model (datasheet IMU noise, 1 px bearings) is optimistic for real data, and the differentiated-mocap velocity truth adds noise. **Open**: inflate IMU and pixel noise, tuned on sequences outside the gate's set.
+
+| Retry pipeline (gate run, reported) | Success | Time to init (median) | Gravity / velocity error (median, accepted) | Velocity NEES (3 dof) |
+| --- | --- | --- | --- | --- |
+| Sim handheld | 100 % | 0.50 s | 0.32° / 0.024 m/s | 3.00 |
+| Sim car | 80 % | 2.12 s | 0.47° / 0.54 m/s (7 % of speed) | 3.72 |
+| Sim cart | 40 % | 3.00 s | 0.12° / 0.035 m/s | **26.2** |
+| Sim fast rotation | 84 % | 0.75 s | 0.32° / 0.038 m/s | 1.96 |
+| EuRoC MH_01–05 | 94 % | 0.50 s | 0.27° / 0.033 m/s | 4.95 |
+| TUM-VI room1 | 92 % | 0.50 s | 0.30° / 0.033 m/s | 7.44 |
+
+Fixed 1 s windows (gated): sim handheld 98.6 %, EuRoC 89.6 %, TUM-VI 92.3 %: FAIL as before. The simulated cart cruises its 20 m straights at exactly 1 m/s (only vibration), where mono scale is unobservable: refinement fails to converge or keeps too few features, and the few accepted cart solutions are overconfident. Whether a real pushed cart (speed surges from pushing) is closer to this or to the car is open until cart data exists.
+
+**Cart push, real-data noise, KITTI (user, 2026-10-11: yes to noise inflation and KITTI, add push variation to the cart).**
+
+- Simulated cart now pushed: on moving legs the speed surges by ±0.15 m/s at 0.6 Hz (scaled with speed, stops stay exact; peak 0.57 m/s²). Retry pipeline on 10 seeds: **64/70 (91 %) initialize, median 1.25 s**, velocity error 0.11 m/s; velocity NEES 5.5 (6 above chi2_0.99): slightly overconfident, open.
+- Real-data noise inflation is tuned by `python/tune_init_noise.py` on sequences no gate uses (EuRoC V1_01–03, TUM-VI room2; `fetch_euroc.sh vicon_room1`, `fetch_tumvi.sh room2`): IMU noise scale × pixel sigma grid, least inflation whose mean velocity NEES is in its 95 % band. `dynamic_init_eval --imu-noise-scale --pixel-sigma`.
+- KITTI raw: `scripts/data/fetch_kitti_raw.sh` (unsynced "extract" drives, OXTS IMU at 100 Hz; default 2011_09_26 drives 0005, 0009, 0019, 0035, 0039, ~9.8 GB, CC BY-NC-SA, evaluation only) and `python/kitti_raw_to_euroc.py` (EuRoC layout: image_00, K_00/D_00 with k3, T_BS from calib_imu_to_velo · calib_velo_to_cam, OXTS rates and accelerations, pose ground truth from lat/lon/alt by the devkit's Mercator projection and roll/pitch/yaw). Checked on drive 0035: the world-frame specific force averages (0.28, −0.45, 9.81) m/s² and the gyro yaw rate matches the ground-truth heading to 0.005 rad/s. The Stage 1b gate reports every converted drive (a start every 5 s). First look (drive 0035 only, 14 s): accepted solutions inaccurate (velocity errors 0.4–5.3 m/s at ~6 m/s) and inconsistent; suspects: the front end at 10 Hz without motion prediction, camera–IMU time offset of the unsynced data, unknown OXTS noise.
+
+**Noise tuning and KITTI results (2026-10-11).**
+
+- `tune_init_noise.py` grid (IMU ×1–8, 1–3 px) on EuRoC V1_01–03 + TUM-VI room2: velocity error unchanged by inflation (~0.037 m/s), NEES falls 27.9 → 3.7; at **IMU ×4, 2 px** V1_02 (4.46), V1_03 (3.26) and room2 (3.48) are in or near band; V1_01 (slow, 0.2–0.4 m/s) stays ~3× overconfident at every setting (median NEES 11.8): open. Velocity truth checked: differencing EuRoC's smoothed positions over ±10 ms adds only 0.004 m/s. Adopted in the Stage 1b gate for EuRoC and TUM-VI (`REAL_NOISE`); simulation not inflated. Result: EuRoC retry NEES 1.23, TUM-VI 2.62.
+- KITTI data issues found and fixed: OXTS timestamps jump back by up to 40 ms and have gaps up to 0.55 s (converter keeps a strictly increasing stream; the pipeline refuses windows with an IMU gap > 50 ms, `max_imu_gap`); velocity truth from differenced OXTS positions disagrees with the OXTS's fused velocity by 0.2 m/s median (0.5–0.7 m/s p90) at any baseline, so the converter writes the fused velocity into EuRoC's state columns and `dynamic_init_eval` uses state velocity when present. OXTS noise measured against ground truth (`python/kitti_imu_consistency.py`): gyro 1.74e-3 rad/s/√Hz, accelerometer 1.22e-2 m/s²/√Hz (10× / 6× ADIS), used by the converter; no further IMU inflation for KITTI. Camera–IMU time offset checked with `tracker_eval euroc --time-offset`: track residuals are lowest at 0 to −0.02 s (median 1.07 px, p90 4.0 px).
+- KITTI retry (5 drives, a start every 5 s): 17/26 (65 %) initialize, median 2.5 s, gravity 0.93°, velocity error 0.89 m/s (speeds 4–14 m/s), velocity NEES 25 (from 971 before the fixes): still ~3× overconfident in sigma. Suspects: the front end at 10 Hz without motion prediction (heavy-tailed residuals, p90 4 px against a 2 px model), remaining OXTS model error.
+
+**Stage 1b re-gated on the retry pipeline (user, 2026-10-11).** The gate now judges `initializeDynamic` as the system runs it, not one fixed window: per gated dataset (sim handheld, EuRoC MH_01–05, TUM-VI room1), success within 5 s ≥ 95 %, time to initialize median ≤ 1 s (plan: ≤ 1 s handheld), gravity median < 1°, velocity median < 0.1 m/s, and on simulation the mean velocity NEES in its 95 % band. Car, cart, fast rotation and KITTI reported; fixed windows reported as diagnostics. Result: **FAIL** on success rate only, everything else passes. (Superseded: **PASS** once the pipeline also takes static and in-place starts, below.)
+
+| Retry pipeline | Success | Time to init (median) | Gravity (= roll/pitch) error median / p90 | Speed error median / p90 (relative median) | Velocity NEES |
+| --- | --- | --- | --- | --- | --- |
+| Sim handheld | 100 % | 0.50 s | 0.31° / 0.67° | 0.024 / 0.043 m/s (3.7 %) | 3.00 (band 2.45–3.60) |
+| EuRoC MH_01–05 | **92.5 %** | 0.50 s | 0.25° / 0.74° | 0.030 / 0.116 m/s (6.2 %) | 1.23 |
+| TUM-VI room1 | **91.7 %** (11/12) | 0.50 s | 0.31° / 0.46° | 0.035 / 0.056 m/s (3.7 %) | 2.62 |
+| Sim car | 80 % | 2.1 s | 0.46° / 1.86° | 0.54 / 2.15 m/s (6.8 %) | 3.72 |
+| Sim cart (pushed) | 91 % | 1.25 s | 0.20° / 0.48° | 0.069 / 0.275 m/s (7.9 %) | 5.50 |
+| KITTI raw | 65 % | 2.5 s | 0.93° / 1.92° | 0.89 / 2.41 m/s (11.1 %) | 25.1 |
+
+EuRoC's 5 failures: 4 refinement non-convergence, 1 scale gate; TUM-VI's 1: too few usable features.
+
+**Static and in-place starts (user, 2026-10-11).** The TUM-VI room1 failure (start 0, both cameras) was not a dynamic-init failure.
+
+- **What happens:** the camera is hand-held "still" for the first 6 s.
+  - It rotates at 1–6°/s, with 0.1–0.4 m/s² of tremor and 2–8 px of raw disparity per 0.5 s, but translates only 1–3 cm/s.
+  - That fails Stage 1a's stillness tests (accelerometer std 0.1 m/s², raw disparity 1 px).
+  - The refinement refuses with "features": without translation nothing has the 0.2° parallax.
+  - The linear solution was already within 0.5° and 0.15 m/s there.
+- **The principle (user):** at rest gravity is the bias-corrected accelerometer reading, no speed needs estimating, and no odometry is needed, since the device is in place.
+- **The change:** each attempt of `initializeDynamic` now tries, in order:
+  1. **Static** (Stage 1a; disparity from the bearings via `pixels_per_radian`): truly still. b_g is the mean gyro.
+  2. **In place** (`inPlaceInitialize`): rotating but not translating.
+     - Gravity is the gyro-compensated mean specific force over the window (preintegrated: dRᵀ dv / T), with v = 0.
+     - Velocity σ is 0.05 m/s (the residual translation of a hand), and enters the tilt covariance as (v_e − v_s)/T. b_g comes from the prior.
+     - Accepted when the rotation-compensated median disparity (first-frame bearings rotated by the gyro into the last frame) is ≤ 1 px over ≥ 10 common features, and the mean specific force is within 0.3 m/s² of g.
+  3. **Dynamic** (steps 1–2 and the scale gate).
+- **Recording:** runs.csv's `init` column records the path. Unit test `InPlaceInit.RotationWithoutTranslation` checks that pure rotation at up to 0.3 rad/s gives tilt < 1e-3 rad, and that the same rotation at 0.3 m/s is refused (disparity > 5 px).
+
+| Retry pipeline | Before | After |
+| --- | --- | --- |
+| TUM-VI room1, cam0 | 11/12 | 12/12 (start 0 in place at 2 s, gravity error 0.22°) |
+| TUM-VI room1, cam1 | 11/12 | 12/12 (start 0 in place at 0.5 s, 0.42°) |
+| EuRoC MH_01–05 | 62/67 | 67/67: the former failures were near-still starts (rotor vibration fails Stage 1a's accelerometer test); 6 starts in place, 1 static, gravity 0.05–0.46° |
+
+Stage 1b gate: **PASS** (room1 success 100 %, median gravity 0.30°, velocity 0.028 m/s, NEES 2.40; EuRoC 100 %, 0.24°, 0.029 m/s, NEES 0.99). Sim, car, cart and KITTI are unchanged (no still starts). In-place NEES is ≈ 0 on EuRoC (v truly ~0), so 0.05 m/s is conservative there.
+
+- **Restart on failure** (`dynamic_init_eval --restart S`, "restart" rows): before this change, restarting every 10 s initialized room1 start 0 at the 10 s restart (10.5 s).
+- **Viewer:** `python/play_init.py room1 [--cam cam1] [--t0 0]`. It plays every attempt from a start, drawing the estimated (yellow) and true (green) gravity as plumb lines from the principal point, with the estimated vs true speed, from `trace.csv`.
+
+How the references treat rotation-only starts (from their docs and papers, not verified in code):
+- **Basalt:** gravity from the first accelerometer sample, v = 0, then the optimizer. Low-parallax points are simply not triangulated.
+- **OKVIS2-X:** mean accelerometer reading plus a zero-speed prior. Its homogeneous landmarks keep points at infinity useful under pure rotation.
+- **sqrtVINS (paper):** static or dynamic, with no explicit in-place case.
+
+In-place init is a batch complementary filter, made safe by the vision "not translating" check. A feature-fitted homography is ambiguous with planar scenes, whereas the gyro-predicted one is not. It is still a candidate cross-check of gyro bias and time offset.
+
+Remaining gaps to sqrtVINS: (2) the paper's no-refinement fallback (linear solution + conservative covariance, 0.6 ms); (3) the window-retry policy of our step 3.
+
+Earlier result, all frames: EuRoC: 7 of 67 starts fail (excitation gate 3, too few usable features 3, no convergence 1). Its window scale misses 5 % in half the runs, tracking excitation: EuRoC's 1 s windows carry 1.1–1.8 m/s² of acceleration against 2.4 (TUM-VI) and 3.5 (sim), and the scale failures drop from 9/15 in the lowest excitation quartile to 3/15 in the highest. Mono scale is observable only through acceleration; the plan's answer is to retry with a longer window (step 3), not yet implemented.
 
 **Cart baseline.** sqrtVINS is the only initializer observed to work on the pushed cart, so it's the reference for cart data. Run it as an unmodified binary on the same segments and windows; it's GPL, so its source stays closed under the clean-room rule. On cart data, the Stage 1 gate is matching its success rate.
 
@@ -452,6 +578,8 @@ Propagate to the image time t_cam + t_d, clone the IMU pose, and augment P with 
 ### Zero-velocity update
 
 When the IMU and the front-end disparity both say stationary, apply v = 0 as a measurement and stop adding clones. Without it, a stopped cart lets velocity and bias errors grow, since the visual update has no parallax.
+
+The same holds "in place" (user, 2026-10-11: no odometry while in place). A hand-held device rotating without translating should also hold position with v = 0. Use the test from Stage 1b's in-place start: rotation-compensated disparity ≤ 1 px, rather than the raw-disparity and accelerometer-spread tests, which tremor and rotation fail. Rotation keeps being integrated from the gyro.
 
 ### Error parameterization: FEJ vs right-invariant
 

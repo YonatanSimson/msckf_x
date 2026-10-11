@@ -1,5 +1,7 @@
 #include "msckf/imu/preintegration.h"
 
+#include <algorithm>
+
 #include "msckf/core/constants.h"
 
 #include <cmath>
@@ -93,7 +95,10 @@ void ImuPreintegration::integrateRange(const std::vector<ImuSample>& imu, double
     g = s0.gyro + u * (s1.gyro - s0.gyro);
     a = s0.acc + u * (s1.acc - s0.acc);
   };
-  for (size_t k = 0; k + 1 < imu.size(); ++k) {
+  // First interval that can overlap [t0, t1]: the last sample at or before t0.
+  auto it = std::upper_bound(imu.begin(), imu.end(), t0, [](double t, const ImuSample& x) { return t < x.t; });
+  const size_t first = it == imu.begin() ? 0 : static_cast<size_t>(it - imu.begin()) - 1;
+  for (size_t k = first; k + 1 < imu.size() && imu[k].t < t1; ++k) {
     const ImuSample& s0 = imu[k];
     const ImuSample& s1 = imu[k + 1];
     const double lo = std::max(s0.t, t0), hi = std::min(s1.t, t1);

@@ -39,7 +39,12 @@ std::vector<KalibrCamera> loadKalibrCamchain(const std::string& path);
 // the body/IMU frame). The name is the directory name.
 KalibrCamera loadEurocCamera(const std::string& sensor_yaml);
 
-// Noise densities from a Kalibr imu.yaml (accelerometer_noise_density, ...).
+// The camera of a EuRoC-format sequence: camera `cam` (cam0, ...) of a Kalibr
+// camchain when one is given, otherwise <euroc_dir>/mav0/<cam>/sensor.yaml.
+KalibrCamera loadSequenceCamera(const std::string& euroc_dir, const std::string& cam, const std::string& camchain);
+
+// Noise densities from a Kalibr imu.yaml (accelerometer_noise_density, ...),
+// flat or nested under imu0 (Kalibr's results files).
 ImuNoise loadKalibrImu(const std::string& path);
 
 }  // namespace msckf::calib

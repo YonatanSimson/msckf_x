@@ -45,6 +45,16 @@ struct SimConfig {
   double wall_margin = 4.0;      // m, wall distance beyond the trajectory's extent
   double wall_height = 4.0;      // m
 
+  // Street corridor along the trajectory (outdoor driving; 0 disables it):
+  // facade points on both sides at a lateral distance in [corridor_near,
+  // corridor_far] and height in [0, corridor_height], plus road-surface
+  // points within corridor_road of the path, per metre of path length.
+  double corridor_density = 0.0;  // facade points per m of path, per side
+  double corridor_road_density = 0.0;  // road points per m of path
+  double corridor_near = 6.0, corridor_far = 15.0;  // m
+  double corridor_height = 8.0;   // m
+  double corridor_road = 8.0;     // m, half-width of the road band
+
   uint64_t seed = 1;
 };
 

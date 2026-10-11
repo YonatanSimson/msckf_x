@@ -36,4 +36,9 @@ tracker_compare_out/
 basalt_flow_check_out/
 tracker_viz_out/
 
+# Dynamic-init noise tuning and playback (python/tune_init_noise.py, play_init.py)
+tune_init_noise_out/
+init_viz_out/
+
 sweep.log
+tune.log

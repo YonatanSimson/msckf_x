@@ -29,6 +29,9 @@ add_library(msckf
   src/eval/trajectory.cpp
   src/imu/preintegration.cpp
   src/imu/propagation.cpp
+  src/init/featureless_init.cpp
+  src/init/init_refinement.cpp
+  src/init/dynamic_init.cpp
   src/init/static_init.cpp
   src/io/euroc.cpp
   src/sim/scenarios.cpp
@@ -75,6 +78,9 @@ target_link_libraries(tracker_eval PRIVATE msckf_calib msckf_vision)
 
 add_executable(static_init_eval tools/static_init_eval.cpp)
 target_link_libraries(static_init_eval PRIVATE msckf_calib)
+
+add_executable(dynamic_init_eval tools/dynamic_init_eval.cpp)
+target_link_libraries(dynamic_init_eval PRIVATE msckf_calib)
 
 if(MSCKF_BUILD_TESTS)
   enable_testing()

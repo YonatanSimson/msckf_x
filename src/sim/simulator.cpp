@@ -137,6 +137,35 @@ std::vector<Landmark> Simulator::makeLandmarks(uint64_t seed) const {
     }
     add(Eigen::Vector3d(xy.x(), xy.y(), z));
   }
+
+  // Street corridor: walk the path in 1 m steps.
+  if (config_.corridor_density > 0.0 || config_.corridor_road_density > 0.0) {
+    std::poisson_distribution<int> n_facade(config_.corridor_density), n_road(config_.corridor_road_density);
+    Eigen::Vector2d last = trajectory_.evaluate(trajectory_.minTime()).p_GI.head<2>();
+    double travelled = 0.0;
+    for (double t = trajectory_.minTime(); t <= trajectory_.maxTime(); t += 0.01) {
+      const Eigen::Vector2d p = trajectory_.evaluate(t).p_GI.head<2>();
+      travelled += (p - last).norm();
+      if (travelled < 1.0) {
+        last = p;
+        continue;
+      }
+      const Eigen::Vector2d dir = (p - last).normalized(), side(-dir.y(), dir.x());
+      travelled = 0.0;
+      last = p;
+      for (double sgn : {-1.0, 1.0}) {
+        for (int i = n_facade(rng); i > 0; --i) {
+          const double d = config_.corridor_near + unit(rng) * (config_.corridor_far - config_.corridor_near);
+          const Eigen::Vector2d xy = p + sgn * d * side + (unit(rng) - 0.5) * dir;
+          add(Eigen::Vector3d(xy.x(), xy.y(), unit(rng) * config_.corridor_height));
+        }
+      }
+      for (int i = n_road(rng); i > 0; --i) {
+        const Eigen::Vector2d xy = p + (2.0 * unit(rng) - 1.0) * config_.corridor_road * side + (unit(rng) - 0.5) * dir;
+        add(Eigen::Vector3d(xy.x(), xy.y(), 0.0));
+      }
+    }
+  }
   return out;
 }
 

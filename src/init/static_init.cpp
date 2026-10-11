@@ -41,8 +41,8 @@ WindowStats windowStats(const std::vector<ImuSample>& imu, double t_end, double 
   return w;
 }
 
-// Attitude with R_GI^T e_z = z (z: gravity's "up" in the IMU frame) and the
-// global x axis along the horizontal projection of the IMU x axis (yaw = 0).
+}  // namespace
+
 Sophus::SO3d attitudeFromUp(const Eigen::Vector3d& z) {
   Eigen::Vector3d x = Eigen::Vector3d::UnitX() - z.x() * z;
   if (x.norm() < 1e-3) x = Eigen::Vector3d::UnitY() - z.y() * z;  // IMU x is vertical
@@ -54,8 +54,6 @@ Sophus::SO3d attitudeFromUp(const Eigen::Vector3d& z) {
   R_GI.row(2) = z.transpose();
   return Sophus::SO3d(Sophus::makeRotationMatrix(R_GI));
 }
-
-}  // namespace
 
 StationarityCheck checkStationary(const std::vector<ImuSample>& imu, double t_end,
                                   const StaticInitConfig& config,
