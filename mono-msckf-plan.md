@@ -16,6 +16,76 @@ Updated as work progresses. Decisions that changed a section below are recorded 
 | 2026-10-11 | 1 | IMU preintegration (GTSAM cross-check), minimal KLT tracker and its evaluation; Basalt flow adopted (vendored `BasaltFlowTracker`, checked against Basalt); `tracker_compare`; benchmark runner (`scripts/run_benchmarks.sh`, `~/benchmark/<date-time>/`) | 2be8886 |
 | 2026-10-11 | 1 | Stage 1 tracker gate on the vendored Basalt flow (FAIL: checkerboard aliasing on TartanAir, room1 > 2 px; deferred), TartanAir gross-error overlay | 7ca7e9d |
 | 2026-10-11 | 1b | Dynamic initialization (sqrtVINS paper: feature-less linear solve, refinement with landmarks, keyframes, scale gate), retry pipeline with static and in-place starts; sim car and pushed cart, KITTI raw; `dynamic_init_eval`, `play_init.py`. Stage 1b gate PASS | 3bcae91 |
+| 2026-10-11 | 1b | RMSE gate, no-refinement hand-off, triplet scale equations (off), stillness at the 90th percentile | c911ab7 |
+| 2026-10-11 | 3 | MSCKF core (`src/filter/`): state, propagation with FEJ, cloning with t_d, feature update (nullspace, chi-square, QR, Joseph), sliding window; shared `geometry/triangulation`; `msckf_sim_eval`, `stage3_sim` gate. Handheld consistent; cart overconfident (see Stage 3 "Progress") | (staged) |
+
+### Handover (2026-10-11)
+
+Read this, then the Stage 1b section, before continuing. The latest commit is c911ab7; the working tree was clean at handover, apart from this plan update.
+
+**Where things stand:**
+- **Stage 0:** complete.
+- **Stage 1a (static init):** gate PASS.
+- **Stage 1b (dynamic init, sqrtVINS paper):** gate PASS on the retry pipeline, which tries static, then in place, then dynamic.
+- **Stage 1 tracker gate:** FAIL, deferred by the user. It fails on repeating-pattern aliasing (checkerboard, AprilGrid) and on large motion without prediction.
+- **Stage 1's full milestone:** the success criterion "VIO ATE over the next 10 s" needs the Stage 3 filter. Init results are judged on the hand-off state until then.
+- **Benchmarks:** the first full benchmark run (`~/benchmark/2026-10-11_225128`, commit c911ab7) was still running at handover; it was on `stage1_tracker`. It has no earlier run to compare with, so it becomes the baseline. Check its `compare.md` and `run.log` when it ends.
+
+**The user's working rules** (also in `~/.claude/CLAUDE.md` and the repo's `CLAUDE.md`):
+- **Git:** never `git commit` or `git push` (nor amend, rebase, tag or force-push). Stage, then propose a commit message ending with the Co-Authored-By line. The user commits and pushes.
+- **Clean room:**
+  - Never open GPL code (OpenVINS, VINS-Mono, ORB-SLAM3).
+  - sqrtVINS is LGPL, and its code must never be read: **paper only** (arXiv 2510.10346; the HTML version is readable with a web fetch).
+  - BSD code (Basalt, GTSAM, COLMAP, OKVIS2-X core) may be read for mechanics.
+- **Python:** lint as you go with black, isort, flake8 `--max-line-length 120` and mypy (config in `python/pyproject.toml`). Run Python with `~/.venv/msckf/bin/python`.
+- **Scripts:** analyses, downloads and gates are committed scripts in `python/` or `scripts/`; no throwaway scripts. Reuse existing code.
+- **Display:** video with OpenCV imshow, images with matplotlib TkAgg or eog. Under WSL, set `DISPLAY=:0`. `python/viz.py`'s `FrameSink` handles windows (click to pause) and falls back to mp4 without a display.
+- **Errors:** report and gate error metrics as **RMSE**, not medians; latencies such as time to init may stay medians.
+- **Init goal:** sqrtVINS-style init; the user found it the most robust. On a cart driving a boustrophedon it "works the best out of any other option". Deviations from the paper are gaps to close or to justify.
+- **Calibrations:** use published calibrations; no re-calibration side quests. Support only the camera models our data uses.
+- **Plan:** keep this plan updated at every milestone, with decisions and measured numbers.
+
+**How to run:**
+- Build and test: `cmake --build build -j8`, then `cd build && ctest` (136 tests). There is no sudo; dependencies come through FetchContent.
+- Gates: `scripts/run_gates.sh`, or a single gate as `python python/msckf_gates/stage1b_dynamic_init.py`, which writes `gate_out/<gate>/report.md`.
+- Benchmarks: `scripts/run_benchmarks.sh` (see above).
+- Init tools:
+  - `build/dynamic_init_eval euroc|sim …` (options in its header comment: `--restart`, `--refine`, `--triplets`, `--sim-pixel-noise`, …).
+  - `python python/play_init.py room1 [--cam cam1] [--t0 0]`: plays init attempts with gravity plumb lines and speed.
+- Front-end tools:
+  - `build/tracker_eval` (modes: tracks, tartanair, …; `--tracker basalt`);
+  - `python/play_tracks.py` (TUM-VI, TartanAir gross errors);
+  - `python/tracker_compare.py` (AprilGrid truth).
+- Basalt pybind (used by `tracker_compare` and `basalt_flow_check`): the build in `~/work/basalt` (uncommitted pybind additions there), built static.
+
+**Key code:**
+- Initialization, in `include/msckf/init/` and `src/init/`:
+  - `static_init`: Stage 1a.
+  - `featureless_init`: the paper's linear solve, keyframes, least-squares covariance, and the optional triplet equations.
+  - `init_refinement`: Gauss-Newton with landmarks and the joint covariance.
+  - `dynamic_init`: the retry pipeline (static, in place, linear, refinement or linear hand-off, scale gate).
+- Front end: `include/msckf/vision/basalt_flow.h` and `src/vision/basalt_flow.cpp`, the vendored Basalt flow (BSD notice).
+- Simulator: `src/sim/`, with scenarios handheld, cart (boustrophedon with push surges and stops), fast_rotation and car.
+
+**Priority (user, 2026-10-11):** after the init gates passed, go to Stage 3 (the filter). Prioritize handheld TUM-VI, EuRoC MAV and UZH-FPV; the cart is reported, not gated, until those work. Next for Stage 3, in order:
+1. **FEJ observability check** (numerical rank, ‖O·N‖ on simulation): FEJ currently raises position NEES on fast rotation and the cart.
+2. **MSCKF on real data:** a `msckf_run` tool on EuRoC / TUM-VI (vendored Basalt flow + Stage 1b init hand-off + filter), ATE / RE through `msckf_eval`; then UZH-FPV (the user is downloading it to `/mnt/c/Users/user/data/uzh_fpv`; a committed fetch/convert script is still needed).
+3. **Zero-velocity update**, then the right-invariant variant (plan, Stage 3).
+4. **Cart consistency** (deprioritized): see Stage 3 "Progress".
+
+**Earlier next steps (Stage 2 and init), still open:**
+1. **Stage 2, gyro-aided prediction** in the vendored flow. The user deferred it in Stage 1; it is now the proposed first Stage 2 item. Measure it with the Stage 1 tracker gate (TartanAir gross errors, room1) and, per the plan, on UZH-FPV (not downloaded yet).
+2. **Stage 2, 2-point RANSAC on bearings with the gyro rotation (pipeline step 5).** The user declined bearing RANSAC earlier because the front end lacked the rotation; with gyro prediction it has it. This targets the aliasing tracks.
+3. **Hybrid Shi-Tomasi/FAST detector**, for checkerboard X-junctions (deferred by the user).
+4. **Zurich Urban MAV integration:** the facts and assessment are under Datasets. The user asked to add it, then paused the integration for this handover.
+5. **Init items still open:**
+   - cart scale tail (sim cart dynamic scale RMSE 28 %);
+   - false in-place starts on decelerating turns (fix: a coherent-translation test);
+   - EuRoC V1_01 overconfident;
+   - the no-refinement covariance;
+   - triplets to re-test on real cart data;
+   - KITTI for diagnosis only.
+6. **Real cart data**, with the sqrtVINS binary run as a baseline on the same segments. This is the real test of Stage 1 on the target platform.
 
 Stage 0 gate status:
 
@@ -33,6 +103,8 @@ Stage 1 gate status:
 | --- | --- | --- |
 | 1a static init, simulation: NEES (200 Monte Carlo runs) | tilt, gyro bias and tilt + b_g + b_a inside the 95% band | 1.92 / 2.93 / 7.82 (bands [1.73, 2.29] / [2.67, 3.35] / [7.46, 8.56]) |
 | 1a static init, EuRoC MH_01–05: gravity direction | < 1° on every stationary window | max 0.77–0.95° per sequence |
+| 1b dynamic init, retry pipeline (sim handheld, EuRoC MH_01–05, TUM-VI room1) | success ≥ 95 % within 5 s, time to init median ≤ 1 s, gravity RMSE < 1°, velocity RMSE < 0.1 m/s, sim velocity NEES in band | **PASS**: 100 / 100 / 100 %, 0.5 s, 0.45 / 0.43 / 0.45°, 0.041 / 0.084 / 0.042 m/s, NEES 3.00 |
+| 1 tracker (`stage1_tracker`, vendored Basalt flow) | plan targets (room1 residuals > 2 px < 2 %, TartanAir gross < 2 %) | **FAIL** (deferred: repeating-pattern aliasing, no motion prediction) |
 
 **How to reproduce.** Every gate result above comes from committed scripts, never ad-hoc commands:
 
@@ -43,7 +115,16 @@ Stage 1 gate status:
 Data lives in `~/data` ($MSCKF_DATA; overflow `/mnt/c/Users/user/data`, $MSCKF_DATA_LARGE), never in the repo:
 
 - `~/data/tumvi/`: calib-cam1 and room1 (EuRoC format, 512×512), calib-cam8 (bag) and the published Kalibr results.
-- `/mnt/c/Users/user/data/euroc/`: Machine Hall MH_01–05 (ASL format), from the ETH Research Collection bundle (record 20.500.11850/690084; the old robotics.ethz.ch links are dead).
+- `/mnt/c/Users/user/data/euroc/`: Machine Hall MH_01–05 (ASL format), from the ETH Research Collection bundle (record 20.500.11850/690084; the old robotics.ethz.ch links are dead). Also Vicon Room 1 V1_01–03, used only to tune noise (`python/tune_init_noise.py`), never by a gate.
+- `~/data/tumvi/`: also calib-imu1–4 (AprilGrid, `tracker_compare`) and room2 (noise tuning only).
+- `/mnt/c/Users/user/data/tartanair/`: TartanAir v2 trajectories (AmericanDiner, Office, OldTownFall, OldTownNight, RetroOffice), used by the tracker gate and `play_tracks.py`.
+- `/mnt/c/Users/user/data/kitti/`:
+  - `raw/`: unsynced "extract" drives 2011_09_26 0005, 0009, 0019, 0035, 0039, from `scripts/data/fetch_kitti_raw.sh`.
+  - `euroc/`: converted by `python/kitti_raw_to_euroc.py`.
+  - `flow2015/`: KITTI flow 2015.
+  - Diagnosis only: see "Who does well on KITTI" in Stage 1b.
+- `/mnt/c/Users/user/data/uzh_fpv/`: UZH-FPV drone racing (user download in progress, 2026-10-12); Stage 3 accuracy and fast rotation.
+- `/mnt/c/Users/user/data/zurich_mav/`: the Zurich Urban MAV dataset (AGZ, Majdik et al., IJRR 2017). The user downloaded it with their own script, `zurich_mav/bash/download_and_extract.sh`; it is not yet integrated (see Datasets).
 
 ## Scope and rules
 
@@ -646,6 +727,19 @@ The same holds "in place" (user, 2026-10-11: no odometry while in place). A hand
 
 The target is GNSS-denied or partially denied operation, so yaw and position stay unobservable for long stretches and consistency matters. Both error parameterizations are implemented behind the same interface: standard multiplicative error with FEJ, and right-invariant SE₂(3) error. Only Φ, the clone Jacobian, H and the reset differ; clones, nullspace projection and QR are shared. Keep whichever has the better NEES over long simulated runs; ATE decides only if both are consistent.
 
+### Progress (2026-10-11)
+
+Code: `include/msckf/filter/`, `src/filter/` (`filter_state`, `propagator`, `feature_update`, `msckf`, `sim_run`), `tools/msckf_sim_eval.cpp`, gate `python/msckf_gates/stage3_sim.py`, tests `test_filter_propagation`, `test_filter_update`.
+
+- **Propagation:** RK4 nominal; Φ in closed form from the preintegrated deltas and their bias Jacobians, with R_k Δv and R_k Δp written as state differences so FEJ evaluates Φ at first estimates only. Q is the preintegration covariance mapped to the global frame plus the bias walk. Φ matches central differences of the RK4 propagation to < 1e-6 over 50 ms. Over 0.5 s the mismatch is 4e-7 to 1.6e-6, falling 4× when the IMU rate doubles (midpoint bias Jacobians vs RK4, second order). Propagation-only NEES (200 runs, 1 s, 15 dof): 14.93 handheld, 14.96 cart, 15.28 fast rotation, band [14.25, 15.77].
+- **Cloning:** the time-offset column [ω; v] matches finite differences.
+- **Update:** pixel residual through the camera Jacobian, extrinsic blocks; FEJ for clones (rotation and position at cloning). The feature is one triangulated estimate from the current clones, as in MSCKF 2.0 (the yaw and translation nullspace holds for any feature point; an extra FEJ triangulation was tried and made no difference).
+- **FEJ vs MSCKF 2.0 (Li & Mourikis, IJRR 2013, `~/work/docs/`):** the paper's attitude error is global (ᴵ_G R ≈ ᴵ_G R̂ (I − ⌊ᴳθ̃×⌋)), so its Φ_θθ = I and it freezes only position and velocity (eqs. 54–56). Ours is body-frame (plan conventions), where the yaw direction R̂ᵀg depends on the rotation estimate, so clone rotations need first estimates too; checked by hand for Φ and H. Using the paper's partial FEJ with our error was tested and is not equivalent (fast-rotation position NEES 10.8). The paper's simulations are a fast car (240 features per image, tracks 4–4.5 frames, 1 px; MSCKF 2.0 NEES 5.89); our slow cart is outside that regime. Its "ideal MSCKF" (Jacobians at the truth) corresponds to `--oracle-jacobians`, which does not fix our cart. The plan's Givens nullspace projection is a Householder QR here (same subspace); triangulation reuses the init's bearing Gauss-Newton (moved to `geometry/triangulation`) instead of anchored inverse depth: the MSCKF residual and its nullspace depend only on the point, not its parameterization. H matches central differences (< 1e-6 relative).
+- **Window:** a track is used when it ends or when the oldest of `max_clones` (11) clones goes; a landmark seen after its track was used starts a new track (marginalized independently, no double counting).
+- **Gate `stage3_sim` (50 runs × 60 s, 1 px; gated: handheld, fast_rotation; cart reported): FAIL.** Handheld consistent with and without FEJ (orientation / position NEES 3.11 / 3.12, band [2.36, 3.72]), 4.9 cm final error RMSE, 3.2 ms per image; extrinsic rotation 0.025°, t_d 0.03 ms pass; extrinsic translation 3.1 mm fails (target 1 mm). Fast rotation: all calibration passes (0.5 mm, 0.008°, 0.015 ms) but position NEES 6.95 with FEJ (3.71 without); cart position NEES 124 with FEJ, 7.8 without. **Open: FEJ raises position NEES where no-FEJ does not** (theory says the opposite); next is the plan's observability metric (numerical rank and ‖O·N‖ with FEJ on and off) to find the cause.
+- **Simulation, 20 runs × 30 s, 1 px (first look):** handheld consistent with and without FEJ (orientation / position NEES 2.94 / 3.39, band [2.02, 4.17]); 3.6 cm final error; 2.9 ms per image median. Extrinsic rotation and t_d converge (0.04°, 0.04 ms); extrinsic translation 3.7 mm after 30 s (target 1 mm).
+- **Cart (simulation) is overconfident:** position NEES 20.5 with FEJ, 6.7 without, ~1 m drift in 30 s, along the horizontal velocity (scale); biases and orientation stay consistent; the propagation alone is consistent. Ruled out with `msckf_sim_eval` diagnostics: calibration (same with extrinsic and t_d fixed), triangulation convergence (30 iterations: identical), FEJ point mismatch, bookkeeping (30 clones fine on handheld), per-feature NIS (0.97 per row). Found: features accepted by the 1° parallax gate have a depth bias (log ratio −0.06 at the start, before drift; handheld 0.000), from selecting on noisy parallax; selecting on the true parallax removes the bias but not the overconfidence. The cart's features are low-parallax (depth error std 20 % vs 6 % handheld); without the gate it diverges, with a stricter one too few survive. Inflating the filter's pixel noise 3× makes it nearly consistent (pose NEES 3.6–8.5). Working explanation: second-order error of poorly triangulated points, coherent across a batch under forward motion. Candidate fixes: clones at keyframes (parallax-spaced) instead of every image, an unbiased feature-quality test, a ZUPT for the stops. Deprioritized (user, 2026-10-11).
+
 ### Stage 3 metrics
 
 | Metric | How | v1 target |
@@ -729,7 +823,23 @@ Use the left camera only from stereo datasets. Together these cover every camera
 | TUM-VIE | Wide-angle frame cameras; check the calibration model before use | Handheld and head-mounted, sports, HDR, indoor and outdoor | Mocap at start and end only | Stage 2–3 robustness: fast motion, HDR, drift at sequence end. Not for Stage 1 metrics |
 | UZH-FPV | Equidistant fisheye | Aggressive drone flight | Laser tracker | Fast rotation, motion blur, gyro-aided tracking |
 | Rosario | Pinhole | Slow agricultural robot, planar | RTK GPS | Closest public match to the cart's motion |
+| KITTI raw (unsynced extract) | Pinhole + radtan (k3) | Car, 10 Hz camera, 100 Hz OXTS | OXTS GPS/INS (fused velocity) | Car-like init, **diagnosis only**: no camera–IMU sync, filtered OXTS "IMU", timestamp jumps and gaps; the init's sim car is consistent where KITTI is not |
+| Zurich Urban MAV (AGZ) | Pinhole + radtan (k1 k2 p1 p2 k3, `calibration_data.npz`) | Tethered MAV flying 5–15 m over Zurich streets, ~2 km, ~45 min | Photogrammetric camera poses (Street View aligned, UTM 32N) for every 30th image only | Aerial urban front-end data; weak for VIO (below) |
 | Exodigo cart (own) | ZED-X left (pinhole), one Insta360 lens (DS) | Slow, planar, frequent stops | RTK GPS | The target system |
+
+**Zurich Urban MAV (AGZ), as found on disk (2026-10-11; not integrated, user paused it for the handover):**
+- **Layout:** `/mnt/c/Users/user/data/zurich_mav/AGZ/` holds 81 169 JPEGs (`MAV Images/00001.jpg`…, 1920×1080 colour GoPro, ~30 Hz).
+- **Calibration:** `calibration_data.npz`: fx 893.4, fy 898.3, cx 951.1, cy 555.1; distortion (−0.2805, 0.1158, −0.00098, 0.00016, −0.0270); from 30 images in `MAV Images Calib/`.
+- **Logs (`Log Files/*.csv`, timestamps in µs):**
+  - `RawGyro.csv` and `RawAccel.csv` run at only **10 Hz**.
+  - `OnboardPose.csv` (Pixhawk) runs at 50 Hz: rates, accelerations, its velocity, accelerometer bias and attitude, plus tether data.
+  - `OnboardGPS.csv` has one row per image (imgid and timestamp: the image clock).
+  - `GroundTruthAGL.csv` has 2 708 poses, every 30th image (~1 Hz): UTM position and photogrammetric angles omega/phi/kappa in degrees, plus the raw GPS.
+- **Also present:** `AGZ.bag` (212 MB) and `air-ground-data/` (the IROS13 air-ground matching subset), plus the papers under `zurich_mav/papers/`.
+- **Assessment:**
+  - Good for the front end: urban aerial imagery at 30 Hz.
+  - Poor for VIO and init: the IMU is 10 Hz raw or 50 Hz filtered, there is **no camera–IMU extrinsic or time-offset calibration**, the GoPro is rolling-shutter, and ground truth is 1 Hz.
+  - Before use: a converter to the EuRoC layout (like `kitti_raw_to_euroc.py`), probably downscaled to 960×540, and an extrinsic estimated or taken from the IJRR17 paper. Then front-end metrics (track length, spread) against TartanAir and EuRoC. The repo needs a committed fetch script (`scripts/data/`), per the no-throwaway-scripts rule.
 
 Record the cart sessions with a calibration sequence (Kalibr, Basalt calibration) at the start of each campaign, and include stops and turns on purpose so initialization and the zero-velocity update are exercised.
 
