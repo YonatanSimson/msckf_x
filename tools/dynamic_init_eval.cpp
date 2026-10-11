@@ -335,7 +335,8 @@ void evaluateWindow(RunLog& log, const std::string& seq, double t0, double windo
   if (lin.ok) {
     DynamicInitConfig dc;
     dc.linear_covariance_scale = linear_covariance_scale;
-    if (const auto st = linearHandoff(imu, win, lin, bg, ba, noise, dc)) {
+    dc.linear = lin_cfg;
+    if (const auto st = linearHandoff(imu, win, T_IC, lin, bg, ba, noise, dc)) {
       const Row base = nr;
       nr = linearHandoffRow(lin, *st, truth);
       nr.method = base.method;

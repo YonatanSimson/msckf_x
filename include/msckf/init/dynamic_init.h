@@ -77,7 +77,7 @@ struct DynamicInitConfig {
   // translation of a hand held in place (TUM-VI room1: 1-3 cm/s).
   double in_place_velocity_sigma = 0.05;  // m/s
   double min_window = 0.5;  // s; 0.3 s monocular windows are unreliable (plan)
-  double growth = 0.25;     // s added per retry
+  double growth = 0.25;     // s added per retry (> 0)
   double max_window = 5.0;  // s
   double max_relative_velocity_sigma = 0.30;
   // Absolute floor (m/s). 0: none. A collapsed scale looks like standing
@@ -126,18 +126,20 @@ std::optional<ImuInitState> inPlaceInitialize(const std::vector<ImuSample>& imu,
 
 // Hand-off from the linear solution alone (the paper's NR): the state at the
 // last keyframe, propagated from (v_I0, g_I0) by IMU preintegration, with the
-// first-order covariance of the linear solve (FeaturelessInitResult::covariance,
-// times linear_covariance_scale) mapped to tilt, position and velocity, plus
-// the preintegration noise and the bias priors. The global frame's shift with
-// the gravity error is ignored (first order in the tilt, covered by the scale).
-// nullopt if the linear result has no covariance.
+// first-order covariance of: the linear solve (FeaturelessInitResult::covariance,
+// times linear_covariance_scale), the bias priors (refinement's sigmas) through
+// both the window's deltas and the linear solution (re-solved with the bias
+// perturbed, config.linear: pass the config the solution came from), and the
+// preintegration noise; the biases' cross-covariance is kept. The global
+// frame's shift with the gravity error is ignored (gauge: yaw). nullopt if the
+// linear result has no covariance or a perturbed re-solve refuses.
 std::optional<ImuInitState> linearHandoff(const std::vector<ImuSample>& imu, const std::vector<InitFrame>& keyframes,
-                                          const FeaturelessInitResult& linear, const Eigen::Vector3d& gyro_bias,
-                                          const Eigen::Vector3d& acc_bias, const ImuNoise& noise,
-                                          const DynamicInitConfig& config);
+                                          const Sophus::SE3d& T_IC, const FeaturelessInitResult& linear,
+                                          const Eigen::Vector3d& gyro_bias, const Eigen::Vector3d& acc_bias,
+                                          const ImuNoise& noise, const DynamicInitConfig& config);
 
 // frames: all frames available from t_start on (more than max_window is
-// fine); imu must cover them.
+// fine). A window the IMU does not cover is refused ("imu").
 DynamicInitResult initializeDynamic(const std::vector<ImuSample>& imu, const std::vector<InitFrame>& frames,
                                     double t_start, const Sophus::SE3d& T_IC, const Eigen::Vector3d& gyro_bias,
                                     const Eigen::Vector3d& acc_bias, const ImuNoise& noise,

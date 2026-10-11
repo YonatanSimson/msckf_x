@@ -75,7 +75,7 @@ InitRefinementResult refineInit(const std::vector<ImuSample>& imu, const std::ve
   const Eigen::Matrix3d R_IC = T_IC.so3().matrix();
   const Eigen::Vector3d& p_IC = T_IC.translation();
   Eigen::MatrixXd Lambda;
-  Eigen::MatrixXd cov;  // of the previous iterate, for the chi-square gate
+  Eigen::LDLT<Eigen::MatrixXd> ldlt;  // of the last iterate's reduced system, for the hand-off covariance
   // Landmarks: every feature seen in >= 2 frames with enough parallax,
   // triangulated once from the initial clones, then estimated in the state
   // (the paper's key features).
@@ -233,9 +233,8 @@ InitRefinementResult refineInit(const std::vector<ImuSample>& imu, const std::ve
       S -= lm.Lxf * lm.Lff_inv * lm.Lxf.transpose();
       b -= lm.Lxf * lm.Lff_inv * lm.gf;
     }
-    const Eigen::LDLT<Eigen::MatrixXd> ldlt(S);
+    ldlt.compute(S);
     const Eigen::VectorXd dx = ldlt.solve(b);
-    cov = ldlt.solve(Eigen::MatrixXd::Identity(n, n));
     res.iterations = it + 1;
     res.cost = cost;
     res.dof = rows - n - 3 * res.features;
@@ -277,6 +276,7 @@ InitRefinementResult refineInit(const std::vector<ImuSample>& imu, const std::ve
   res.clones = x;
   res.gyro_bias = bg;
   res.acc_bias = ba;
+  const Eigen::MatrixXd cov = ldlt.solve(Eigen::MatrixXd::Identity(n, n));
   ImuInitState& s = res.state;
   s.t = frames.back().t;
   s.nav = x.back();

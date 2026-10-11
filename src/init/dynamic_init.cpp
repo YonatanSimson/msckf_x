@@ -7,6 +7,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <stdexcept>
+#include <utility>
 
 namespace msckf {
 
@@ -19,18 +22,23 @@ double quantile(std::vector<double>& x, double q) {
   return x[i];
 }
 
+// Bearings of the features seen in both frames, (in a, in b).
+std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> commonBearings(const InitFrame& a, const InitFrame& b) {
+  std::map<int64_t, Eigen::Vector3d> in_b(b.bearings.begin(), b.bearings.end());
+  std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> out;
+  for (const auto& [id, ba] : a.bearings) {
+    if (const auto it = in_b.find(id); it != in_b.end()) out.emplace_back(ba, it->second);
+  }
+  return out;
+}
+
 // Angle (rad) between the bearings of the features seen in both the first and
 // the last frame, at the given quantile; < 0 when they share none.
 double disparityQuantile(const std::vector<InitFrame>& frames, double q) {
   if (frames.size() < 2) return -1.0;
   std::vector<double> d;
-  for (const auto& [id, b0] : frames.front().bearings) {
-    for (const auto& [id1, b1] : frames.back().bearings) {
-      if (id1 == id) {
-        d.push_back(std::atan2(b0.cross(b1).norm(), b0.dot(b1)));
-        break;
-      }
-    }
+  for (const auto& [b0, b1] : commonBearings(frames.front(), frames.back())) {
+    d.push_back(std::atan2(b0.cross(b1).norm(), b0.dot(b1)));
   }
   if (d.empty()) return -1.0;
   return quantile(d, q);
@@ -53,14 +61,9 @@ std::optional<ImuInitState> inPlaceInitialize(const std::vector<ImuSample>& imu,
   // the last camera frame, against the last frame's bearing.
   const Eigen::Matrix3d R_CeCs = (T_IC.so3().inverse() * pre.deltaR().inverse() * T_IC.so3()).matrix();
   std::vector<double> d;
-  for (const auto& [id, b0] : frames.front().bearings) {
-    for (const auto& [id1, b1] : frames.back().bearings) {
-      if (id1 == id) {
-        const Eigen::Vector3d p = R_CeCs * b0;
-        d.push_back(std::atan2(p.cross(b1).norm(), p.dot(b1)) * config.pixels_per_radian);
-        break;
-      }
-    }
+  for (const auto& [b0, b1] : commonBearings(frames.front(), frames.back())) {
+    const Eigen::Vector3d p = R_CeCs * b0;
+    d.push_back(std::atan2(p.cross(b1).norm(), p.dot(b1)) * config.pixels_per_radian);
   }
   if (d.size() < 10) return std::nullopt;  // too few common features to judge
   const double disparity = quantile(d, config.still_disparity_quantile);
@@ -103,9 +106,10 @@ std::optional<ImuInitState> inPlaceInitialize(const std::vector<ImuSample>& imu,
 }
 
 std::optional<ImuInitState> linearHandoff(const std::vector<ImuSample>& imu, const std::vector<InitFrame>& keyframes,
-                                          const FeaturelessInitResult& linear, const Eigen::Vector3d& gyro_bias,
-                                          const Eigen::Vector3d& acc_bias, const ImuNoise& noise,
-                                          const DynamicInitConfig& config) {
+                                          const Sophus::SE3d& T_IC, const FeaturelessInitResult& linear,
+                                          const Eigen::Vector3d& gyro_bias, const Eigen::Vector3d& acc_bias,
+                                          const ImuNoise& noise, const DynamicInitConfig& config) {
+  using namespace imu_err;
   if (!linear.has_covariance || keyframes.size() < 2) return std::nullopt;
   const double gn = linear.g_I0.norm();
   ImuPreintegration pre(gyro_bias, acc_bias, noise);
@@ -120,44 +124,69 @@ std::optional<ImuInitState> linearHandoff(const std::vector<ImuSample>& imu, con
   st.gyro_bias = gyro_bias;
   st.acc_bias = acc_bias;
 
-  // First-order map from x = (dv_I0, du) (g_I0 = gn normalize(u + B du)) to
-  // the hand-off errors (dtheta body, dp global, dv global):
-  //   g_b = R_l^T g_I0 (R_l: I0 -> last, gyro), tilt dtheta = -[g_b]x dg_b / gn^2
-  //   v_b = R_l^T (v_I0 + g_I0 T + dv_pre), dv_G = R_GI (dv_b - [v_b]x dtheta)
-  //   p_G = R_GI0 (v_I0 T + g_I0 T^2 / 2 + dp_pre)
-  const Eigen::Matrix3d Rl = pre.deltaR().matrix();
-  const Eigen::Matrix<double, 3, 2> dg = gn * linear.gravity_basis;  // d g_I0 / d du
-  const Eigen::Vector3d g_b = Rl.transpose() * linear.g_I0;
-  const Eigen::Matrix3d R_GI = st.nav.R_GI.matrix(), R_GI0 = s0.R_GI.matrix();
-  const Eigen::Vector3d v_b = R_GI.transpose() * st.nav.v_GI;
-  Eigen::Matrix<double, 9, 5> L = Eigen::Matrix<double, 9, 5>::Zero();
-  Eigen::Matrix<double, 3, 5> dgb, dvb;
-  dgb << Eigen::Matrix3d::Zero(), Rl.transpose() * dg;
-  dvb << Rl.transpose(), Rl.transpose() * dg * T;
-  const Eigen::Matrix<double, 3, 5> dth = -Sophus::SO3d::hat(g_b) * dgb / (gn * gn);
-  L.block<3, 5>(0, 0) = dth;
-  L.block<3, 3>(3, 0) = R_GI0 * T;
-  L.block<3, 2>(3, 3) = R_GI0 * dg * 0.5 * T * T;
-  L.block<3, 5>(6, 0) = R_GI * (dvb - Sophus::SO3d::hat(v_b) * dth);
+  // Sensitivity of the linear solution y = (v_I0, g_I0) to the bias (it used
+  // the deltas at the prior bias), by central differences.
+  Eigen::Matrix<double, 6, 6> S_b;
+  for (int i = 0; i < 6; ++i) {
+    const double eps = 1e-4;
+    Eigen::Matrix<double, 6, 1> y[2];
+    for (int k = 0; k < 2; ++k) {
+      Eigen::Matrix<double, 6, 1> db = Eigen::Matrix<double, 6, 1>::Zero();
+      db(i) = k == 0 ? eps : -eps;
+      const FeaturelessInitResult r = featurelessInit(imu, keyframes, T_IC, gyro_bias + db.head<3>(),
+                                                      acc_bias + db.tail<3>(), noise, config.linear);
+      if (!r.ok) return std::nullopt;
+      y[k] << r.v_I0, r.g_I0;
+    }
+    S_b.col(i) = (y[0] - y[1]) / (2.0 * eps);
+  }
 
-  using namespace imu_err;
+  // First-order map from y to the hand-off errors (dtheta body, dp global,
+  // dv global). The first frame's tilt error is dtheta0 = -[g_I0]x dg / |g|^2
+  // (R_GI0 g_I0 = g for any estimate, so gravity itself cancels):
+  //   dtheta = R_l^T dtheta0                                (R_l: I0 -> last)
+  //   dp_G = R_GI0 (dv_I0 T - [v_I0 T + dp_pre]x dtheta0)
+  //   dv_G = R_GI0 (dv_I0 - [v_I0 + dv_pre]x dtheta0)
+  const Eigen::Matrix3d Rl = pre.deltaR().matrix(), R_GI0 = s0.R_GI.matrix();
+  const Eigen::Matrix3d dth0_dg = -Sophus::SO3d::hat(linear.g_I0) / (gn * gn);
+  Eigen::Matrix<double, 9, 6> L = Eigen::Matrix<double, 9, 6>::Zero();
+  L.block<3, 3>(kTheta, 3) = Rl.transpose() * dth0_dg;
+  L.block<3, 3>(kP, 0) = R_GI0 * T;
+  L.block<3, 3>(kP, 3) = -R_GI0 * Sophus::SO3d::hat(linear.v_I0 * T + pre.deltaP()) * dth0_dg;
+  L.block<3, 3>(kV, 0) = R_GI0;
+  L.block<3, 3>(kV, 3) = -R_GI0 * Sophus::SO3d::hat(linear.v_I0 + pre.deltaV()) * dth0_dg;
+  // The linear covariance is over (v_I0, du), g_I0 = |g| normalize(u + B du).
+  Eigen::Matrix<double, 6, 5> M = Eigen::Matrix<double, 6, 5>::Zero();
+  M.topLeftCorner<3, 3>().setIdentity();
+  M.bottomRightCorner<3, 2>() = gn * linear.gravity_basis;
+  // The bias error moves the window's deltas (with y fixed) and y itself.
+  Eigen::Matrix<double, 9, 6> A = L * S_b;
+  A.block<3, 3>(kTheta, 0) += pre.dR_dbg();
+  A.block<3, 3>(kP, 0) += R_GI0 * pre.dP_dbg();
+  A.block<3, 3>(kP, 3) += R_GI0 * pre.dP_dba();
+  A.block<3, 3>(kV, 0) += R_GI0 * pre.dV_dbg();
+  A.block<3, 3>(kV, 3) += R_GI0 * pre.dV_dba();
+  const double sbg = config.refinement.gyro_bias_sigma, sba = config.refinement.acc_bias_sigma;
+  Eigen::Matrix<double, 6, 6> Pb = Eigen::Matrix<double, 6, 6>::Zero();
+  Pb.diagonal() << sbg * sbg, sbg * sbg, sbg * sbg, sba * sba, sba * sba, sba * sba;
+  // Preintegration noise: dtheta is already in the last frame (right
+  // perturbation); dp and dv are in I0.
+  Eigen::Matrix<double, 9, 9> G = Eigen::Matrix<double, 9, 9>::Identity();
+  G.block<3, 3>(kP, kP) = R_GI0;
+  G.block<3, 3>(kV, kV) = R_GI0;
+
+  static_assert(kTheta == 0 && kP == 3 && kV == 6 && kBg == 9 && kBa == 12);
   st.P.setZero();
-  const Eigen::Matrix<double, 9, 9> P9 = config.linear_covariance_scale * L * linear.covariance * L.transpose();
-  // [dtheta, dp, dv] blocks map to kTheta, kP, kV (contiguous, same order).
-  st.P.block<9, 9>(kTheta, kTheta) = P9;
-  // Preintegration noise over the window (rotated to the hand-off's frames).
-  const Matrix9d& Q = pre.covariance();  // [dtheta, dp, dv], frame I0
-  st.P.block<3, 3>(kTheta, kTheta) += Rl.transpose() * Q.block<3, 3>(0, 0) * Rl;
-  st.P.block<3, 3>(kP, kP) += R_GI0 * Q.block<3, 3>(3, 3) * R_GI0.transpose();
-  st.P.block<3, 3>(kV, kV) += R_GI0 * Q.block<3, 3>(6, 6) * R_GI0.transpose();
+  st.P.topLeftCorner<9, 9>() = config.linear_covariance_scale * L * M * linear.covariance * M.transpose() * L.transpose() +
+                               A * Pb * A.transpose() + G * pre.covariance() * G.transpose();
+  st.P.block<9, 6>(0, kBg) = A * Pb;
+  st.P.block<6, 9>(kBg, 0) = (A * Pb).transpose();
+  st.P.block<6, 6>(kBg, kBg) = Pb;
   // Gauge: yaw (about global z, in the body frame) and the first frame's position.
-  const Eigen::Vector3d z_b = R_GI.transpose() * Eigen::Vector3d::UnitZ();
+  const Eigen::Vector3d z_b = st.nav.R_GI.inverse() * Eigen::Vector3d::UnitZ();
   const double ys = config.refinement.gauge_sigma;
   st.P.block<3, 3>(kTheta, kTheta) += ys * ys * z_b * z_b.transpose();
   st.P.block<3, 3>(kP, kP) += ys * ys * Eigen::Matrix3d::Identity();
-  const double sbg = config.refinement.gyro_bias_sigma, sba = config.refinement.acc_bias_sigma;
-  st.P.block<3, 3>(kBg, kBg) = sbg * sbg * Eigen::Matrix3d::Identity();
-  st.P.block<3, 3>(kBa, kBa) = sba * sba * Eigen::Matrix3d::Identity();
   return st;
 }
 
@@ -172,6 +201,7 @@ DynamicInitResult initializeDynamic(const std::vector<ImuSample>& imu, const std
                                     double t_start, const Sophus::SE3d& T_IC, const Eigen::Vector3d& gyro_bias,
                                     const Eigen::Vector3d& acc_bias, const ImuNoise& noise,
                                     const DynamicInitConfig& config) {
+  if (!(config.growth > 0.0)) throw std::invalid_argument("initializeDynamic: growth must be > 0");
   DynamicInitResult res;
   for (double w = config.min_window; w <= config.max_window + 1e-9; w += config.growth) {
     // The window: from the first frame at or after t_start to its time + w
@@ -190,19 +220,17 @@ DynamicInitResult initializeDynamic(const std::vector<ImuSample>& imu, const std
       res.reason = "data";  // the frames run out before this window ends
       break;
     }
-    if (imu.empty() || imu.back().t < win.back().t) {
+    if (imu.empty() || imu.front().t > win.front().t || imu.back().t < win.back().t) {
       res.reason = "imu";
       break;
     }
     {
-      // IMU continuity over the window.
-      double prev = -1.0, gap = 0.0;
-      for (const ImuSample& smp : imu) {
-        if (smp.t < win.front().t - config.max_imu_gap) continue;
-        if (prev >= 0.0) gap = std::max(gap, smp.t - prev);
-        prev = smp.t;
-        if (smp.t > win.back().t) break;
-      }
+      // IMU continuity over the window, from the last sample at or before its
+      // start to the first after its end.
+      const auto later = [](double v, const ImuSample& x) { return v < x.t; };
+      auto it = std::upper_bound(imu.begin(), imu.end(), win.front().t, later) - 1;
+      double gap = 0.0;
+      for (; it + 1 != imu.end() && it->t <= win.back().t; ++it) gap = std::max(gap, (it + 1)->t - it->t);
       if (gap > config.max_imu_gap) {
         res.reason = "imu_gap";
         res.window = w;
@@ -234,6 +262,9 @@ DynamicInitResult initializeDynamic(const std::vector<ImuSample>& imu, const std
       if (st) {
         res.ok = true;
         res.is_static = true;
+        res.linear_only = false;  // earlier attempts' fields describe failures
+        res.velocity_sigma = 0.0;
+        res.linear = FeaturelessInitResult{};
         res.reason.clear();
         res.keyframe_t = {win.back().t};
         res.refinement = InitRefinementResult{};
@@ -259,7 +290,7 @@ DynamicInitResult initializeDynamic(const std::vector<ImuSample>& imu, const std
         (!res.refinement.ok && config.refine == InitRefinementPolicy::kFallback)) {
       const std::string why = res.refinement.ok ? "" : res.refinement.reason;
       res.refinement = InitRefinementResult{};
-      if (auto st = linearHandoff(imu, kf, res.linear, gyro_bias, acc_bias, noise, config)) {
+      if (auto st = linearHandoff(imu, kf, T_IC, res.linear, gyro_bias, acc_bias, noise, config)) {
         res.refinement.ok = true;
         res.refinement.state = *st;
         res.linear_only = true;

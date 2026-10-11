@@ -214,7 +214,8 @@ FeaturelessInitResult featurelessInit(const std::vector<ImuSample>& imu, const s
   }
   res.triplets = static_cast<int>(trows.size());
   res.acc_excitation = accExcitation(imu, t0, frames.back().t, gyro_bias, acc_bias);
-  if (res.pairs < config.min_pairs) {
+  // Six unknowns (v_I0, g_I0): fewer rows cannot determine them.
+  if (res.pairs < config.min_pairs || 2 * res.pairs + res.triplets < 6) {
     res.reason = "pairs";
     return res;
   }
