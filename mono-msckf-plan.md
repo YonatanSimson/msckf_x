@@ -17,11 +17,13 @@ Updated as work progresses. Decisions that changed a section below are recorded 
 | 2026-10-11 | 1 | Stage 1 tracker gate on the vendored Basalt flow (FAIL: checkerboard aliasing on TartanAir, room1 > 2 px; deferred), TartanAir gross-error overlay | 7ca7e9d |
 | 2026-10-11 | 1b | Dynamic initialization (sqrtVINS paper: feature-less linear solve, refinement with landmarks, keyframes, scale gate), retry pipeline with static and in-place starts; sim car and pushed cart, KITTI raw; `dynamic_init_eval`, `play_init.py`. Stage 1b gate PASS | 3bcae91 |
 | 2026-10-11 | 1b | RMSE gate, no-refinement hand-off, triplet scale equations (off), stillness at the 90th percentile | c911ab7 |
-| 2026-10-11 | 3 | MSCKF core (`src/filter/`): state, propagation with FEJ, cloning with t_d, feature update (nullspace, chi-square, QR, Joseph), sliding window; shared `geometry/triangulation`; `msckf_sim_eval`, `stage3_sim` gate. Handheld consistent; cart overconfident (see Stage 3 "Progress") | (staged) |
+| 2026-10-11 | 3 | MSCKF core (`src/filter/`): state, propagation with FEJ, cloning with t_d, feature update (nullspace, chi-square, QR, Joseph), sliding window; shared `geometry/triangulation`; `msckf_sim_eval`, `stage3_sim` gate. Handheld consistent; cart overconfident (see Stage 3 "Progress") | 77ba820 |
+| 2026-10-12 | 3 | Review fixes: `stage3_sim` consistency on the share of epochs in the band (≥ 90 %), propagation refuses targets before the state time, nullspace projection in place, shared `maxRayAngleDeg` | 54698d0 |
+| 2026-10-12 | 1b | Init review fixes: featureless init refuses < 6 equations, IMU must cover the window, linear hand-off covariance rederived, refinement covariance inverted once | 6d006eb |
 
-### Handover (2026-10-11)
+### Handover (2026-10-12)
 
-Read this, then the Stage 1b section, before continuing. The latest commit is c911ab7; the working tree was clean at handover, apart from this plan update.
+Read this, then the Stage 1b section, before continuing. The latest commit is 6d006eb; the working tree was clean at handover, apart from this plan update and the untracked `.clang-format` / `.clang-tidy`.
 
 **Where things stand:**
 - **Stage 0:** complete.
@@ -29,7 +31,7 @@ Read this, then the Stage 1b section, before continuing. The latest commit is c9
 - **Stage 1b (dynamic init, sqrtVINS paper):** gate PASS on the retry pipeline, which tries static, then in place, then dynamic.
 - **Stage 1 tracker gate:** FAIL, deferred by the user. It fails on repeating-pattern aliasing (checkerboard, AprilGrid) and on large motion without prediction.
 - **Stage 1's full milestone:** the success criterion "VIO ATE over the next 10 s" needs the Stage 3 filter. Init results are judged on the hand-off state until then.
-- **Benchmarks:** the first full benchmark run (`~/benchmark/2026-10-11_225128`, commit c911ab7) was still running at handover; it was on `stage1_tracker`. It has no earlier run to compare with, so it becomes the baseline. Check its `compare.md` and `run.log` when it ends.
+- **Benchmarks:** latest full run `~/benchmark/2026-10-12_004139` (commit 6d006eb, after both review-fix commits) against `2026-10-11_230242` (c911ab7): 0 regressions, 0 degraded. FAILs, all known: `stage1_tracker` (deferred), `basalt_flow_check` (0.156 / 0.131 % unmatched points vs 0.1 %, room1), `stage3_sim` (first run, now its baseline; same numbers as Stage 3 "Progress"). `tracker_compare` timings 3–23 % faster for every tracker, Basalt included: machine load, not code.
 
 **The user's working rules** (also in `~/.claude/CLAUDE.md` and the repo's `CLAUDE.md`):
 - **Git:** never `git commit` or `git push` (nor amend, rebase, tag or force-push). Stage, then propose a commit message ending with the Co-Authored-By line. The user commits and pushes.
