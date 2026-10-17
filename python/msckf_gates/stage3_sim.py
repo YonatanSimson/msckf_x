@@ -76,9 +76,11 @@ def main():
     ap.add_argument("--duration", type=float, default=60.0)
     ap.add_argument("--scenarios", nargs="+", default=GATED)
     ap.add_argument("--reported", nargs="*", default=REPORTED)
+    ap.add_argument("--min-parallax", type=float, help="deg, overrides the filter's parallax gate (diagnosis)")
+    ap.add_argument("--out", default="stage3_sim", help="gate_out subdirectory")
     args = ap.parse_args()
 
-    out = gate_out("stage3_sim")
+    out = gate_out(args.out)
     report = GateReport("Stage 3: MSCKF on simulation")
     for sc in args.scenarios + args.reported:
         gated_sc = sc in args.scenarios
@@ -98,6 +100,8 @@ def main():
             ]
             if not fej:
                 cmd.append("--no-fej")
+            if args.min_parallax is not None:
+                cmd += ["--min-parallax", args.min_parallax]
             run(cmd, log=out / f"{tag}.log")
             col, runs = load(d / "epochs.csv", args.runs)
             label = f"{sc}, {'FEJ' if fej else 'no FEJ'}"

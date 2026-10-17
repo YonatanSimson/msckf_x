@@ -5,6 +5,7 @@
 #include "msckf/geometry/triangulation.h"
 
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 namespace msckf {
@@ -28,12 +29,12 @@ Rays raysTo(const Eigen::Vector3d& X, const std::vector<Eigen::Vector3d>& centre
 TEST(Triangulation, RecoversPointFromExactBearings) {
   const Eigen::Vector3d X(0.4, -0.3, 5.0);
   const Rays rays = raysTo(X, {{0, 0, 0}, {0.3, 0, 0}, {0.6, 0.1, 0}}, Sophus::SO3d());
-  Eigen::Vector3d est;
+  AnchoredPoint est;
   double parallax = 0.0;
 
   ASSERT_TRUE(triangulate(rays.T_GC, rays.bearings, &est, &parallax));
 
-  EXPECT_LT((est - X).norm(), 1e-9);
+  EXPECT_LT((est.point() - X).norm(), 1e-9);
 }
 
 TEST(Triangulation, RecoversPointPastNinetyDegreesOffAxis) {
@@ -41,27 +42,27 @@ TEST(Triangulation, RecoversPointPastNinetyDegreesOffAxis) {
   const double off_axis = 2.0 * M_PI / 3.0;
   const Eigen::Vector3d X(4.0 * std::sin(off_axis), 0.5, 4.0 * std::cos(off_axis));
   const Rays rays = raysTo(X, {{0, 0, 0}, {0, 0.3, 0}, {0, 0.6, 0.2}}, Sophus::SO3d());
-  Eigen::Vector3d est;
+  AnchoredPoint est;
   double parallax = 0.0;
 
   ASSERT_TRUE(triangulate(rays.T_GC, rays.bearings, &est, &parallax));
 
-  EXPECT_LT((est - X).norm(), 1e-9);
+  EXPECT_LT((est.point() - X).norm(), 1e-9);
 }
 
 TEST(Triangulation, RecoversFarPointAtLowParallax) {
   const Eigen::Vector3d X(1.0, 2.0, 500.0);
   const Rays rays = raysTo(X, {{0, 0, 0}, {0.05, 0, 0}, {0.1, 0, 0}}, Sophus::SO3d::rotX(0.2));
-  Eigen::Vector3d est;
+  AnchoredPoint est;
   double parallax = 0.0;
 
   ASSERT_TRUE(triangulate(rays.T_GC, rays.bearings, &est, &parallax));
 
   EXPECT_LT(parallax, 0.02);
-  EXPECT_LT((est - X).norm() / X.norm(), 1e-6);
+  EXPECT_LT((est.point() - X).norm() / X.norm(), 1e-6);
 }
 
-TEST(Triangulation, RejectsParallelRays) {
+TEST(Triangulation, NoBaselineGivesPointAtInfinity) {
   // Cameras at one centre looking at one point: identical rays in the world.
   const Eigen::Vector3d X(0.4, -0.3, 5.0);
   Rays rays;
@@ -69,19 +70,50 @@ TEST(Triangulation, RejectsParallelRays) {
     rays.T_GC.emplace_back(R, Eigen::Vector3d::Zero());
     rays.bearings.push_back((R.inverse() * X).normalized());
   }
-  Eigen::Vector3d est;
+  AnchoredPoint est;
+  double parallax = 0.0;
+
+  ASSERT_TRUE(triangulate(rays.T_GC, rays.bearings, &est, &parallax));
+
+  EXPECT_EQ(est.x.z(), 0.0);
+  EXPECT_LT((est.scaledFrom(Eigen::Vector3d::Zero()).normalized() - X.normalized()).norm(), 1e-9);
+}
+
+TEST(Triangulation, RejectsDivergingRays) {
+  // 2 km at 10 cm baseline, with noise that makes the rays diverge: rho < 0.
+  const Eigen::Vector3d X(0.0, 0.0, 2000.0);
+  Rays rays = raysTo(X, {{0, 0, 0}, {0.1, 0, 0}}, Sophus::SO3d());
+  rays.bearings[1] = (rays.bearings[1] + Eigen::Vector3d(1e-3, 0, 0)).normalized();
+  AnchoredPoint est;
   double parallax = 0.0;
 
   EXPECT_FALSE(triangulate(rays.T_GC, rays.bearings, &est, &parallax));
 }
 
 TEST(Triangulation, RejectsPointBehindCameras) {
-  const Rays rays = raysTo({0.4, -0.3, 5.0}, {{0, 0, 0}, {0.3, 0, 0}}, Sophus::SO3d());
+  // The reviewer's case: 5.7 deg of parallax, rays meeting 10 m behind.
+  const Rays rays = raysTo({0.5, 0.3, 10.0}, {{0, 0, 0}, {1.0, 0, 0}}, Sophus::SO3d());
   const std::vector<Eigen::Vector3d> flipped = {-rays.bearings[0], -rays.bearings[1]};
-  Eigen::Vector3d est;
+  AnchoredPoint est;
   double parallax = 0.0;
 
   EXPECT_FALSE(triangulate(rays.T_GC, flipped, &est, &parallax));
+}
+
+TEST(AnchoredPoint, RoundTripsThroughFromPoint) {
+  const Sophus::SE3d T_GA(Sophus::SO3d::rotZ(0.3) * Sophus::SO3d::rotX(-0.2), Eigen::Vector3d(1, 2, 3));
+  const Eigen::Vector3d p_G = T_GA * Eigen::Vector3d(0.5, -0.4, 7.0);
+
+  const AnchoredPoint f = AnchoredPoint::fromPoint(T_GA, p_G);
+
+  EXPECT_LT((f.point() - p_G).norm(), 1e-12);
+  EXPECT_LT((f.scaledFrom(Eigen::Vector3d::Zero()) - f.x.z() * p_G).norm(), 1e-12);
+}
+
+TEST(AnchoredPoint, PointAtInfinityHasNoPosition) {
+  const AnchoredPoint f{Sophus::SE3d(), Eigen::Vector3d(0.1, 0.2, 0.0)};
+
+  EXPECT_THROW(f.point(), std::domain_error);
 }
 
 }  // namespace

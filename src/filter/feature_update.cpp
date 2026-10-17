@@ -23,38 +23,42 @@ double chi2Quantile(double probability, int dof) {
 }
 
 bool linearizeFeature(const FilterState& s, const CameraModel& camera, const FeatureTrack& track,
-                      const std::vector<size_t>& clone_of_obs, const Eigen::Vector3d& p_f, FeatureJacobian* out,
-                      const Eigen::Vector3d* p_f_lin) {
+                      const std::vector<size_t>& clone_of_obs, const AnchoredPoint& f, FeatureJacobian* out,
+                      const AnchoredPoint* f_lin) {
   const int m = static_cast<int>(clone_of_obs.size());
   out->H_x = Eigen::MatrixXd::Zero(2 * m, s.dim());
   out->H_f = Eigen::MatrixXd::Zero(2 * m, 3);
   out->r = Eigen::VectorXd::Zero(2 * m);
   const Eigen::Matrix3d R_CI = s.R_IC.inverse().matrix();
+  const AnchoredPoint& fl = f_lin ? *f_lin : f;
+  const double rho = fl.x.z();
   const bool fej = s.options().fej;
   for (int j = 0; j < m; ++j) {
     const Clone& c = s.clones()[clone_of_obs[j]];
-    // Residual at the current estimates.
-    const Eigen::Vector3d p_C = R_CI * (c.R_GI.inverse() * (p_f - c.p_GI) - s.p_IC);
+    // Residual at the current estimates; h = rho p_C projects like p_C.
+    const Eigen::Vector3d h = R_CI * (c.R_GI.inverse() * f.scaledFrom(c.p_GI) - f.x.z() * s.p_IC);
     Eigen::Vector2d uv;
-    if (!camera.project(p_C, uv)) return false;
+    if (!camera.project(h, uv)) return false;
     out->r.segment<2>(2 * j) = track.uv[j] - uv;
     // Jacobians at the linearization point: with FEJ the clone's first
     // estimates (see Clone).
     const Sophus::SO3d& R_GI = fej ? c.R_GI_fej : c.R_GI;
     const Eigen::Vector3d& p_GI = fej ? c.p_GI_fej : c.p_GI;
-    const Eigen::Vector3d p_I_lin = R_GI.inverse() * ((p_f_lin ? *p_f_lin : p_f) - p_GI);
-    const Eigen::Vector3d p_C_lin = R_CI * (p_I_lin - s.p_IC);
+    const Eigen::Matrix3d R_IG = R_GI.inverse().matrix();
+    const Eigen::Vector3d q_I = R_IG * fl.scaledFrom(p_GI);  // rho p_I
+    const Eigen::Vector3d h_lin = R_CI * (q_I - rho * s.p_IC);
     Eigen::Vector2d uv_lin;
     Matrix23d J;
-    if (!camera.project(p_C_lin, uv_lin, &J)) return false;
-    const Eigen::Matrix3d R_IG = R_GI.inverse().matrix();
+    if (!camera.project(h_lin, uv_lin, &J)) return false;
     const int ci = s.cloneIndex(clone_of_obs[j]);
-    out->H_x.block<2, 3>(2 * j, ci) = J * R_CI * Sophus::SO3d::hat(p_I_lin);
-    out->H_x.block<2, 3>(2 * j, ci + 3) = -J * R_CI * R_IG;
-    out->H_f.block<2, 3>(2 * j, 0) = J * R_CI * R_IG;
+    out->H_x.block<2, 3>(2 * j, ci) = J * R_CI * Sophus::SO3d::hat(q_I);
+    out->H_x.block<2, 3>(2 * j, ci + 3) = -rho * J * R_CI * R_IG;
+    Eigen::Matrix3d dh_dx;
+    dh_dx << R_IG * fl.T_GA.so3().matrix().leftCols<2>(), R_IG * (fl.T_GA.translation() - p_GI) - s.p_IC;
+    out->H_f.block<2, 3>(2 * j, 0) = J * R_CI * dh_dx;
     if (const int e = s.extrinsicIndex(); e >= 0) {
-      out->H_x.block<2, 3>(2 * j, e) = J * Sophus::SO3d::hat(p_C_lin);
-      out->H_x.block<2, 3>(2 * j, e + 3) = -J * R_CI;
+      out->H_x.block<2, 3>(2 * j, e) = J * Sophus::SO3d::hat(h_lin);
+      out->H_x.block<2, 3>(2 * j, e + 3) = -rho * J * R_CI;
     }
   }
   return true;
@@ -91,10 +95,11 @@ UpdateStats featureUpdate(FilterState& s, const CameraModel& camera, const std::
 
     // One estimate of the point, triangulated from the current clones, for
     // the residual and every Jacobian (MSCKF 2.0).
-    Eigen::Vector3d p_f, p_f_lin, p_true;
+    AnchoredPoint f;
+    Eigen::Vector3d p_true;
     double parallax = 0.0;
     const bool have_true = options.landmark_oracle && options.landmark_oracle(track.id, &p_true);
-    const bool ok = triangulate(T_GC, obs.bearing, &p_f, &parallax);
+    const bool ok = triangulate(T_GC, obs.bearing, &f, &parallax);
     if (have_true && options.oracle_selection) {
       std::vector<Eigen::Vector3d> rays;
       for (const Sophus::SE3d& T : T_GC) rays.push_back(p_true - T.translation());
@@ -104,10 +109,10 @@ UpdateStats featureUpdate(FilterState& s, const CameraModel& camera, const std::
       ++stats.rejected_triangulation;
       continue;
     }
-    p_f_lin = p_f;
-    if (have_true && options.oracle_jacobians) p_f_lin = p_true;
+    AnchoredPoint f_lin = f;
+    if (have_true && options.oracle_jacobians) f_lin = AnchoredPoint::fromPoint(f.T_GA, p_true);
     FeatureJacobian fj;
-    if (!linearizeFeature(s, camera, obs, clone_of_obs, p_f, &fj, &p_f_lin)) {
+    if (!linearizeFeature(s, camera, obs, clone_of_obs, f, &fj, &f_lin)) {
       ++stats.rejected_triangulation;
       continue;
     }
@@ -141,9 +146,9 @@ UpdateStats featureUpdate(FilterState& s, const CameraModel& camera, const std::
     ++stats.used;
     stats.rows += rows;
     stats.nis += gamma;
-    if (have_true) {
+    if (have_true && f.x.z() > 0.0) {
       const Sophus::SE3d T_CG = T_GC.front().inverse();
-      stats.depth_log_ratio.push_back(std::log((T_CG * p_f).norm() / (T_CG * p_true).norm()));
+      stats.depth_log_ratio.push_back(std::log((T_CG * f.point()).norm() / (T_CG * p_true).norm()));
     }
   }
   if (Hs.empty()) return stats;

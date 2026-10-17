@@ -91,9 +91,11 @@ InitRefinementResult refineInit(const std::vector<ImuSample>& imu, const std::ve
         poses.push_back(T_GC[k]);
         bs.push_back(bb);
       }
-      Landmark lm;
+      AnchoredPoint pt;
       double parallax = 0.0;
-      if (!triangulate(poses, bs, &lm.p, &parallax) || parallax < config.min_parallax_deg) continue;
+      if (!triangulate(poses, bs, &pt, &parallax) || parallax < config.min_parallax_deg || pt.x.z() <= 0.0) continue;
+      Landmark lm;
+      lm.p = pt.point();
       lm.obs = obs;
       landmarks[id] = std::move(lm);
     }

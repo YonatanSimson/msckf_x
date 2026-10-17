@@ -27,7 +27,7 @@ struct Fixture {
   FilterState state;
   FeatureTrack track;
   std::vector<size_t> clone_of_obs;
-  Eigen::Vector3d p_f;
+  AnchoredPoint f;
 };
 
 // Noise-free handheld run; clones at five frames 0.2 s apart and a landmark
@@ -76,20 +76,20 @@ Fixture makeFixture(bool fej) {
   for (const auto& l : d.landmarks) {
     if (l.id == id) p_f = l.p_G;
   }
-  return {std::move(d), std::move(s), tr, clones, p_f};
+  const Clone& anchor = s.clones().front();
+  const Sophus::SE3d T_GA = Sophus::SE3d(anchor.R_GI, anchor.p_GI) * Sophus::SE3d(s.R_IC, s.p_IC);
+  const AnchoredPoint f = AnchoredPoint::fromPoint(T_GA, p_f);
+  return {std::move(d), std::move(s), tr, clones, f};
 }
 
-TEST(FilterUpdate, JacobiansMatchFiniteDifferences) {
-  Fixture fx = makeFixture(false);
-  // Move the estimate off the truth so the residual is not zero.
-  Eigen::VectorXd dx0 = 1e-3 * Eigen::VectorXd::LinSpaced(fx.state.dim(), -1.0, 1.0);
-  fx.state.inject(dx0);
+// Central differences of the residual (r = z - h) in the state and in the
+// feature's inverse-depth parameters.
+FeatureJacobian finiteDifferences(const Fixture& fx, const AnchoredPoint& f) {
   const auto cam = camera();
-  FeatureJacobian fj;
-  ASSERT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, fx.p_f, &fj));
-
   const double eps = 1e-6;
-  Eigen::MatrixXd fd_x(fj.r.size(), fx.state.dim());
+  FeatureJacobian fd;
+  fd.H_x.resize(2 * static_cast<long>(fx.clone_of_obs.size()), fx.state.dim());
+  fd.H_f.resize(fd.H_x.rows(), 3);
   for (int j = 0; j < fx.state.dim(); ++j) {
     Eigen::VectorXd dx = Eigen::VectorXd::Zero(fx.state.dim());
     dx(j) = eps;
@@ -97,20 +97,52 @@ TEST(FilterUpdate, JacobiansMatchFiniteDifferences) {
     plus.inject(dx);
     minus.inject(-dx);
     FeatureJacobian a, b;
-    ASSERT_TRUE(linearizeFeature(plus, *cam, fx.track, fx.clone_of_obs, fx.p_f, &a));
-    ASSERT_TRUE(linearizeFeature(minus, *cam, fx.track, fx.clone_of_obs, fx.p_f, &b));
-    fd_x.col(j) = -(a.r - b.r) / (2.0 * eps);  // r = z - h(x)
+    EXPECT_TRUE(linearizeFeature(plus, *cam, fx.track, fx.clone_of_obs, f, &a));
+    EXPECT_TRUE(linearizeFeature(minus, *cam, fx.track, fx.clone_of_obs, f, &b));
+    fd.H_x.col(j) = -(a.r - b.r) / (2.0 * eps);
   }
-  Eigen::MatrixXd fd_f(fj.r.size(), 3);
   for (int j = 0; j < 3; ++j) {
+    AnchoredPoint plus = f, minus = f;
+    plus.x(j) += eps;
+    minus.x(j) -= eps;
     FeatureJacobian a, b;
-    const Eigen::Vector3d d = eps * Eigen::Vector3d::Unit(j);
-    ASSERT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, fx.p_f + d, &a));
-    ASSERT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, fx.p_f - d, &b));
-    fd_f.col(j) = -(a.r - b.r) / (2.0 * eps);
+    EXPECT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, plus, &a));
+    EXPECT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, minus, &b));
+    fd.H_f.col(j) = -(a.r - b.r) / (2.0 * eps);
   }
-  EXPECT_LT((fd_x - fj.H_x).norm(), 1e-6 * fj.H_x.norm());
-  EXPECT_LT((fd_f - fj.H_f).norm(), 1e-6 * fj.H_f.norm());
+  return fd;
+}
+
+TEST(FilterUpdate, JacobiansMatchFiniteDifferences) {
+  Fixture fx = makeFixture(false);
+  // Move the estimate off the truth so the residual is not zero.
+  fx.state.inject(1e-3 * Eigen::VectorXd::LinSpaced(fx.state.dim(), -1.0, 1.0));
+  FeatureJacobian fj;
+  ASSERT_TRUE(linearizeFeature(fx.state, *camera(), fx.track, fx.clone_of_obs, fx.f, &fj));
+
+  const FeatureJacobian fd = finiteDifferences(fx, fx.f);
+
+  EXPECT_LT((fd.H_x - fj.H_x).norm(), 1e-6 * fj.H_x.norm());
+  EXPECT_LT((fd.H_f - fj.H_f).norm(), 1e-6 * fj.H_f.norm());
+}
+
+// A point at infinity (rho = 0): the Jacobians stay finite and correct, and
+// only clone rotations (and the extrinsic rotation) are constrained.
+TEST(FilterUpdate, PointAtInfinityConstrainsRotationOnly) {
+  Fixture fx = makeFixture(false);
+  AnchoredPoint f = fx.f;
+  f.x.z() = 0.0;
+  FeatureJacobian fj;
+  ASSERT_TRUE(linearizeFeature(fx.state, *camera(), fx.track, fx.clone_of_obs, f, &fj));
+
+  const FeatureJacobian fd = finiteDifferences(fx, f);
+
+  EXPECT_LT((fd.H_x - fj.H_x).norm(), 1e-6 * fj.H_x.norm());
+  EXPECT_LT((fd.H_f - fj.H_f).norm(), 1e-6 * fj.H_f.norm());
+  for (size_t i = 0; i < fx.state.clones().size(); ++i) {
+    EXPECT_EQ(fj.H_x.middleCols<3>(fx.state.cloneIndex(i) + 3).norm(), 0.0);
+    EXPECT_GT(fj.H_x.middleCols<3>(fx.state.cloneIndex(i)).norm(), 1.0);
+  }
 }
 
 // With FEJ, the clone blocks are evaluated at the clones' first estimates:
@@ -119,13 +151,13 @@ TEST(FilterUpdate, FejFreezesCloneJacobians) {
   Fixture fx = makeFixture(true);
   const auto cam = camera();
   FeatureJacobian before, after;
-  ASSERT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, fx.p_f, &before));
+  ASSERT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, fx.f, &before));
   const int c0 = fx.state.cloneIndex(0);
   const int nc = 6 * static_cast<int>(fx.state.clones().size());
   Eigen::VectorXd dx = Eigen::VectorXd::Zero(fx.state.dim());
   dx.segment(c0, nc).setConstant(1e-2);
   fx.state.inject(dx);
-  ASSERT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, fx.p_f, &after));
+  ASSERT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, fx.f, &after));
   EXPECT_LT((before.H_x.middleCols(c0, nc) - after.H_x.middleCols(c0, nc)).norm(), 1e-12);
   EXPECT_GT((before.r - after.r).norm(), 1.0);  // the residual does move
 }
@@ -136,7 +168,7 @@ TEST(FilterUpdate, ExactObservationsLeaveTruthUnchanged) {
   const auto cam = camera();
   const FilterState before = fx.state;
   FeatureJacobian fj;
-  ASSERT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, fx.p_f, &fj));
+  ASSERT_TRUE(linearizeFeature(fx.state, *cam, fx.track, fx.clone_of_obs, fx.f, &fj));
   std::cout << "residual at truth " << fj.r.norm() << " px\n";
   EXPECT_LT(fj.r.norm(), 1e-2);  // RK4 propagation error only (~2e-3 px)
   const UpdateStats st = featureUpdate(fx.state, *cam, {fx.track}, UpdateOptions{});

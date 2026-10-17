@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace msckf {
 
@@ -25,6 +26,21 @@ double maxRayAngleDeg(const std::vector<Eigen::Vector3d>& directions) {
     }
   }
   return best * 180.0 / M_PI;
+}
+
+Eigen::Vector3d AnchoredPoint::scaledFrom(const Eigen::Vector3d& c) const {
+  return T_GA.so3() * Eigen::Vector3d(x.x(), x.y(), 1.0) + x.z() * (T_GA.translation() - c);
+}
+
+Eigen::Vector3d AnchoredPoint::point() const {
+  if (x.z() <= 0.0) throw std::domain_error("AnchoredPoint::point: point at infinity (rho <= 0)");
+  return T_GA * (Eigen::Vector3d(x.x(), x.y(), 1.0) / x.z());
+}
+
+AnchoredPoint AnchoredPoint::fromPoint(const Sophus::SE3d& T_GA, const Eigen::Vector3d& p_G) {
+  const Eigen::Vector3d p_A = T_GA.inverse() * p_G;
+  if (p_A.z() <= 0.0) throw std::domain_error("AnchoredPoint::fromPoint: point behind the anchor");
+  return {T_GA, Eigen::Vector3d(p_A.x() / p_A.z(), p_A.y() / p_A.z(), 1.0 / p_A.z())};
 }
 
 namespace {
@@ -54,14 +70,29 @@ Sophus::SE3d anchorFrame(const Sophus::SE3d& T_GC, const Eigen::Vector3d& b) {
   return T_GC * Sophus::SE3d(Sophus::SO3d(Sophus::makeRotationMatrix(R)), Eigen::Vector3d::Zero());
 }
 
-// Gauss-Newton step on the tangent-plane bearing residuals for the anchored
-// inverse depth x = (alpha, beta, rho), p_A = [alpha, beta, 1] / rho. With
-// T_CA the camera poses relative to A, rho p_C = R_CA [alpha, beta, 1] + rho t_CA,
-// which stays finite for a point at infinity (rho = 0).
-Eigen::Vector3d inverseDepthStep(const std::vector<Sophus::SE3d>& T_CA, const std::vector<Eigen::Vector3d>& b,
-                                 const Eigen::Vector3d& x) {
+// Start: the midpoint when the rays meet in front of the anchor, else the
+// anchor's bearing at infinity (parallel rays, or no baseline).
+Eigen::Vector3d initialInverseDepth(const std::vector<Sophus::SE3d>& T_GC, const std::vector<Eigen::Vector3d>& d,
+                                    const Sophus::SE3d& T_GA) {
+  Eigen::Vector3d X;
+  if (!midpoint(T_GC, d, &X)) return Eigen::Vector3d::Zero();
+  const Eigen::Vector3d p_A = T_GA.inverse() * X;
+  if (p_A.z() <= 0.0) return Eigen::Vector3d::Zero();
+  return {p_A.x() / p_A.z(), p_A.y() / p_A.z(), 1.0 / p_A.z()};
+}
+
+struct NormalEquations {
   Eigen::Matrix3d H = Eigen::Matrix3d::Zero();
   Eigen::Vector3d g = Eigen::Vector3d::Zero();
+};
+
+// Gauss-Newton normal equations of the tangent-plane bearing residuals for the
+// anchored inverse depth x = (alpha, beta, rho), p_A = [alpha, beta, 1] / rho.
+// With T_CA the camera poses relative to A, rho p_C = R_CA [alpha, beta, 1] +
+// rho t_CA, which stays finite for a point at infinity (rho = 0).
+NormalEquations normalEquations(const std::vector<Sophus::SE3d>& T_CA, const std::vector<Eigen::Vector3d>& b,
+                                const Eigen::Vector3d& x) {
+  NormalEquations ne;
   const Eigen::Vector3d ray(x.x(), x.y(), 1.0);
   for (size_t i = 0; i < b.size(); ++i) {
     const Eigen::Matrix3d R = T_CA[i].so3().matrix();
@@ -72,36 +103,42 @@ Eigen::Vector3d inverseDepthStep(const std::vector<Sophus::SE3d>& T_CA, const st
     dh_dx << R.col(0), R.col(1), T_CA[i].translation();
     const Matrix32d B = tangentBasis(b[i]);
     const Eigen::Matrix<double, 2, 3> J = B.transpose() * (Eigen::Matrix3d::Identity() - n * n.transpose()) / r * dh_dx;
-    H += J.transpose() * J;
-    g += J.transpose() * (-B.transpose() * n);
+    ne.H += J.transpose() * J;
+    ne.g += J.transpose() * (-B.transpose() * n);
   }
-  return H.ldlt().solve(g);
+  // Without baseline rho is unobservable (zero column): the damping keeps it put.
+  ne.H.diagonal().array() += 1e-12;
+  return ne;
+}
+
+// Gauss-Newton on x.
+Eigen::Vector3d refineInverseDepth(const std::vector<Sophus::SE3d>& T_CA, const std::vector<Eigen::Vector3d>& b,
+                                   Eigen::Vector3d x) {
+  for (int it = 0; it < 5; ++it) {
+    const NormalEquations ne = normalEquations(T_CA, b, x);
+    const Eigen::Vector3d dx = ne.H.ldlt().solve(ne.g);
+    x += dx;
+    if (dx.norm() < 1e-9 * (1.0 + x.norm())) break;
+  }
+  return x;
 }
 
 }  // namespace
 
-bool triangulate(const std::vector<Sophus::SE3d>& T_GC, const std::vector<Eigen::Vector3d>& b, Eigen::Vector3d* X,
+bool triangulate(const std::vector<Sophus::SE3d>& T_GC, const std::vector<Eigen::Vector3d>& b, AnchoredPoint* p,
                  double* parallax_deg) {
   std::vector<Eigen::Vector3d> d(b.size());
   for (size_t i = 0; i < b.size(); ++i) d[i] = T_GC[i].so3() * b[i];
   *parallax_deg = maxRayAngleDeg(d);
-  Eigen::Vector3d X0;
-  if (!midpoint(T_GC, d, &X0)) return false;
-  const Sophus::SE3d T_GA = anchorFrame(T_GC.front(), b.front());
-  const Eigen::Vector3d p_A = T_GA.inverse() * X0;
-  if (p_A.z() <= 0.0) return false;
-  Eigen::Vector3d x(p_A.x() / p_A.z(), p_A.y() / p_A.z(), 1.0 / p_A.z());
+  p->T_GA = anchorFrame(T_GC.front(), b.front());
   std::vector<Sophus::SE3d> T_CA;
-  for (const Sophus::SE3d& T : T_GC) T_CA.push_back(T.inverse() * T_GA);
-  for (int it = 0; it < 5; ++it) {
-    const Eigen::Vector3d dx = inverseDepthStep(T_CA, b, x);
-    x += dx;
-    if (dx.norm() < 1e-9 * (1.0 + x.norm())) break;
-  }
-  if (!x.allFinite() || x.z() <= 0.0) return false;  // NaN fails every comparison
-  *X = T_GA * (Eigen::Vector3d(x.x(), x.y(), 1.0) / x.z());
+  for (const Sophus::SE3d& T : T_GC) T_CA.push_back(T.inverse() * p->T_GA);
+  p->x = refineInverseDepth(T_CA, b, initialInverseDepth(T_GC, d, p->T_GA));
+  // rho < 0: rays that meet behind the cameras. Not left to the chi-square gate,
+  // whose nullspace projection removes exactly the rho direction.
+  if (!p->x.allFinite() || p->x.z() < 0.0) return false;
   for (size_t i = 0; i < b.size(); ++i) {
-    if ((T_GC[i].inverse() * *X).dot(b[i]) <= 0.0) return false;
+    if ((T_GC[i].so3().inverse() * p->scaledFrom(T_GC[i].translation())).dot(b[i]) <= 0.0) return false;
   }
   return true;
 }
