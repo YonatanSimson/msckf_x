@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["mypy", "black", "isort", "flake8", "types-PyYAML"]
+aria = ["projectaria-tools==2.3.0"]  # reads LaMAria's original VRS recordings
 
 [project.scripts]
 play-euroc = "play_euroc:main"
@@ -25,6 +26,7 @@ gate-stage1-tracker = "msckf_gates.stage1_tracker:main"
 gate-stage1b-dynamic-init = "msckf_gates.stage1b_dynamic_init:main"
 gate-stage3-sim = "msckf_gates.stage3_sim:main"
 gate-stage3-observability = "msckf_gates.stage3_observability:main"
+gate-stage3-real = "msckf_gates.stage3_real:main"
 tracker-sweep = "tracker_sweep:main"
 tracker-compare = "tracker_compare:main"
 benchmark-compare = "benchmark_compare:main"

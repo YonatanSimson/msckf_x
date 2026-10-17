@@ -57,4 +57,9 @@ class CameraModel {
 
 using CameraModelPtr = std::shared_ptr<CameraModel>;
 
+/// Pixels per radian of bearing at the image centre (1 px step along u): the
+/// focal length of a pinhole, its equivalent for wide-angle models.
+/// @throws std::runtime_error if the centre does not unproject.
+double pixelsPerRadian(const CameraModel& camera);
+
 }  // namespace msckf

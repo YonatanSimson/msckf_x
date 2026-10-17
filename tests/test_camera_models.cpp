@@ -160,5 +160,13 @@ TEST_P(CameraModelTest, RejectsPointsOutsideValidRegion) {
 INSTANTIATE_TEST_SUITE_P(AllModels, CameraModelTest, ::testing::ValuesIn(cameraCases()),
                          [](const auto& info) { return info.param.label; });
 
+TEST(CameraModel, PixelsPerRadianOfUndistortedPinholeIsFocalLength) {
+  Eigen::VectorXd k(9);
+  k << 400.0, 400.0, 376.0, 240.0, 0.0, 0.0, 0.0, 0.0, 0.0;
+  const PinholeRadtan camera(752, 480, k);
+
+  EXPECT_NEAR(pixelsPerRadian(camera), 400.0, 1e-3);
+}
+
 }  // namespace
 }  // namespace msckf

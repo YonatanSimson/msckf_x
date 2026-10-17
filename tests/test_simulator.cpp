@@ -263,5 +263,13 @@ INSTANTIATE_TEST_SUITE_P(AllScenarios, SimulatorTest,
                            return name;
                          });
 
+TEST(Scenarios, ParseScenarioAcceptsCommandLineNames) {
+  EXPECT_EQ(parseScenario("handheld"), Scenario::kHandheld);
+  EXPECT_EQ(parseScenario("fast_rotation"), Scenario::kFastRotation);
+  EXPECT_EQ(parseScenario("cart"), Scenario::kCart);
+  EXPECT_EQ(parseScenario("car"), Scenario::kCar);
+  EXPECT_THROW(parseScenario("boat"), std::invalid_argument);
+}
+
 }  // namespace
 }  // namespace msckf

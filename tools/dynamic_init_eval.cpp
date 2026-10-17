@@ -543,31 +543,6 @@ std::vector<InitFrame> windowFrames(const std::vector<InitFrame>& all, double t0
 
 // ---------------------------------------------------------------- euroc ----
 
-struct BiasSample {
-  double t;
-  Eigen::Vector3d bg, ba;
-  Eigen::Vector3d v = Eigen::Vector3d::Zero();  // world velocity, when the file has it
-};
-
-// EuRoC state_groundtruth_estimate0: columns 11-13 b_w, 14-16 b_a. Empty for
-// pose-only files.
-std::vector<BiasSample> readGroundTruthBiases(const std::string& path) {
-  std::ifstream f(path);
-  std::vector<BiasSample> out;
-  std::string line;
-  while (std::getline(f, line)) {
-    if (line.empty() || line[0] == '#') continue;
-    std::stringstream ss(line);
-    std::vector<double> v;
-    std::string tok;
-    while (std::getline(ss, tok, ',')) v.push_back(std::stod(tok));
-    if (v.size() < 17) return {};
-    out.push_back({v[0] * 1e-9, Eigen::Vector3d(v[11], v[12], v[13]), Eigen::Vector3d(v[14], v[15], v[16]),
-                   Eigen::Vector3d(v[8], v[9], v[10])});
-  }
-  return out;
-}
-
 int runEuroc(const Args& a) {
   const calib::KalibrCamera kc = calib::loadSequenceCamera(a.euroc, a.cam, a.camchain);
   if (!kc.has_T_IC) throw std::runtime_error("camera has no extrinsic (T_cam_imu / T_BS)");
@@ -575,34 +550,21 @@ int runEuroc(const Args& a) {
   const eval::Trajectory gt = eval::readEurocGroundTruth(a.gt);
   // State ground truth (EuRoC layout: velocity and biases) when the file has
   // it: its velocity is the truth; pose-only files (TUM-VI) are differenced.
-  const std::vector<BiasSample> state = readGroundTruthBiases(a.gt);
-  const std::vector<BiasSample> biases = a.bias == "gt" ? state : std::vector<BiasSample>{};
+  const std::vector<io::EurocState> state = io::readEurocStates(a.gt);
+  const std::vector<io::EurocState> biases = a.bias == "gt" ? state : std::vector<io::EurocState>{};
   if (a.bias == "gt" && biases.empty()) throw std::runtime_error("--bias gt needs EuRoC's state ground truth");
   if (a.bias != "gt" && a.bias != "zero") throw std::invalid_argument("--bias " + a.bias);
 
-  // Frames from the tracks: frame index -> (t, bearings).
-  std::map<int, InitFrame> frames;
-  {
-    std::ifstream f(a.tracks);
-    if (!f) throw std::runtime_error("cannot open " + a.tracks);
-    std::string line;
-    std::getline(f, line);
-    while (std::getline(f, line)) {
-      std::stringstream ss(line);
-      std::string tok;
-      std::vector<std::string> v;
-      while (std::getline(ss, tok, ',')) v.push_back(tok);
-      const int k = std::stoi(v[0]);
-      InitFrame& fr = frames[k];
-      fr.t = std::stoll(v[1]) * 1e-9;
+  // Frames from the tracks: bearings unprojected from the raw pixels.
+  std::vector<InitFrame> all;
+  for (const io::TrackedFrame& tf : io::readTracks(a.tracks)) {
+    InitFrame& fr = all.emplace_back();
+    fr.t = tf.t;
+    for (const auto& [id, uv] : tf.uv) {
       Eigen::Vector3d b;
-      if (kc.model->unproject(Eigen::Vector2d(std::stod(v[3]), std::stod(v[4])), b)) {
-        fr.bearings.emplace_back(std::stoll(v[2]), b);
-      }
+      if (kc.model->unproject(uv, b)) fr.bearings.emplace_back(id, b);
     }
   }
-  std::vector<InitFrame> all;
-  for (auto& [k, fr] : frames) all.push_back(std::move(fr));
 
   ImuNoise noise = a.imu_yaml.empty() ? ImuNoise{} : calib::loadKalibrImu(a.imu_yaml);
   noise.gyro_noise *= a.imu_noise_scale;
@@ -610,16 +572,8 @@ int runEuroc(const Args& a) {
   noise.gyro_bias_walk *= a.imu_noise_scale;
   noise.acc_bias_walk *= a.imu_noise_scale;
   // Bearing noise: --pixel-sigma px at the image centre, as an angle.
-  double bearing_sigma = 0.0, pixels_per_radian = 0.0;
-  {
-    const Eigen::Vector2d c(0.5 * kc.model->width(), 0.5 * kc.model->height());
-    Eigen::Vector3d b0, b1;
-    if (!kc.model->unproject(c, b0) || !kc.model->unproject(c + Eigen::Vector2d(1.0, 0.0), b1)) {
-      throw std::runtime_error("camera centre does not unproject");
-    }
-    pixels_per_radian = 1.0 / std::atan2(b0.cross(b1).norm(), b0.dot(b1));
-    bearing_sigma = a.pixel_sigma / pixels_per_radian;
-  }
+  const double pixels_per_radian = pixelsPerRadian(*kc.model);
+  const double bearing_sigma = a.pixel_sigma / pixels_per_radian;
   FeaturelessInitConfig lin_cfg;
   lin_cfg.min_acc_excitation = a.min_excitation;
   lin_cfg.triplet_scale = a.triplets;
@@ -637,7 +591,7 @@ int runEuroc(const Args& a) {
   auto velocity = [&](double t, const Sophus::SE3d& Tm_, const Sophus::SE3d& Tp_) -> Eigen::Vector3d {
     if (state.empty()) return (Tp_.translation() - Tm_.translation()) / (2.0 * kH);
     const auto it = std::lower_bound(state.begin(), state.end(), t,
-                                     [](const BiasSample& b, double x) { return b.t < x; });
+                                     [](const io::EurocState& b, double x) { return b.t < x; });
     if (it == state.begin() || it == state.end()) return it == state.end() ? state.back().v : it->v;
     const auto prev = it - 1;
     const double u = (t - prev->t) / (it->t - prev->t);
@@ -680,7 +634,7 @@ int runEuroc(const Args& a) {
     Eigen::Vector3d bg = Eigen::Vector3d::Zero(), ba = Eigen::Vector3d::Zero();
     if (!biases.empty()) {
       const auto it = std::lower_bound(biases.begin(), biases.end(), t0,
-                                       [](const BiasSample& b, double t) { return b.t < t; });
+                                       [](const io::EurocState& b, double t) { return b.t < t; });
       if (it != biases.end()) {
         bg = it->bg;
         ba = it->ba;

@@ -94,6 +94,9 @@ target_link_libraries(static_init_eval PRIVATE msckf_calib)
 add_executable(dynamic_init_eval tools/dynamic_init_eval.cpp)
 target_link_libraries(dynamic_init_eval PRIVATE msckf_calib)
 
+add_executable(msckf_run tools/msckf_run.cpp)
+target_link_libraries(msckf_run PRIVATE msckf_calib)
+
 if(MSCKF_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)

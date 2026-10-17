@@ -51,9 +51,8 @@ from pathlib import Path
 
 import numpy as np
 
+from msckf_gates import sequences
 from msckf_gates.common import (
-    FRONT_END_EUROC,
-    FRONT_END_TUMVI,
     GateReport,
     data_dir,
     fnum,
@@ -65,18 +64,8 @@ from msckf_gates.common import (
     tool,
 )
 
-EUROC = ["MH_01_easy", "MH_02_easy", "MH_03_medium", "MH_04_difficult", "MH_05_difficult"]
 SCENARIOS = ["handheld", "car", "cart", "fast_rotation"]
-# One LaMAria sequence per difficulty, from the MPS-ground-truth set (R_01-R_10;
-# the control-point sequences' pGT has keyframes up to 1 s apart, too sparse
-# for velocity truth). All ten cost ~20 min of tracking per run.
-LAMARIA = ["R_01_easy", "R_02_easy", "R_03_easy"]
 LAMARIA_NAME = "LaMAria R_01-03"
-# Real-data noise inflation, tuned by python/tune_init_noise.py on EuRoC
-# V1_01-03 and TUM-VI room2 (no gate uses them): IMU noise densities x4 and
-# 2 px bearings bring V1_02, V1_03 and room2 into their NEES bands (V1_01, slow
-# motion, stays ~3x overconfident: open). Simulation is not inflated.
-REAL_NOISE = ["--imu-noise-scale", "4", "--pixel-sigma", "2"]
 METHODS = ["refined", "nr", "linear", "okvis"]  # per window length; "retry" is summarized separately
 GATED = ("sim handheld", "EuRoC MH_01-05", "TUM-VI room1")
 RECORDED = (LAMARIA_NAME,)  # not gated; retry metrics tracked across benchmark runs
@@ -155,62 +144,40 @@ def main():
 
     out = gate_out("stage1b_dynamic_init")
     report = GateReport("Stage 1b: dynamic initialization (pipeline with retry)")
-    te, de = tool("tracker_eval"), tool("dynamic_init_eval")
+    de = tool("dynamic_init_eval")
 
     # Front-end tracks, then the initializer runs.
-    room1 = args.tumvi / "dataset-room1_512_16"
-    tum_cam = ["--euroc", room1, "--cam", "cam0", "--camchain", room1 / "dso" / "camchain.yaml"]
-    real = {f"euroc_{s}": (["--euroc", args.euroc / s, "--cam", "cam0"], FRONT_END_EUROC,
-                           args.euroc / s / "mav0" / "state_groundtruth_estimate0" / "data.csv", "gt",
-                           args.euroc / s / "mav0" / "imu0" / "sensor.yaml")
-            for s in EUROC}  # fmt: skip
-    real["tumvi_room1"] = (
-        tum_cam,
-        FRONT_END_TUMVI,
-        room1 / "dso" / "gt_imu.csv",
-        "zero",
-        args.tumvi / "kalibr_results" / "pinhole-equi-512" / "imu-imucalib.yaml",
-    )
+    real = [*sequences.euroc(args.euroc), sequences.tumvi_room1(args.tumvi)]
     # KITTI raw drives (converted by python/kitti_raw_to_euroc.py): reported,
-    # not gated; short drives, so a start every 5 s.
-    extra = {}
+    # not gated; short drives, so a start every 5 s. The converter writes the
+    # OXTS noise measured against ground truth (python/kitti_imu_consistency.py):
+    # no further IMU inflation.
     kitti = sorted(p for p in args.kitti.glob("*_drive_*") if (p / "mav0").exists())
-    for d in kitti:
-        name = f"kitti_{d.name}"
-        real[name] = (["--euroc", d, "--cam", "cam0"], FRONT_END_EUROC, d / "gt_imu.csv", "zero",
-                      d / "mav0" / "imu0" / "sensor.yaml")  # fmt: skip
-        # The converter writes the OXTS noise measured against ground truth
-        # (python/kitti_imu_consistency.py): no further IMU inflation.
-        extra[name] = ["--segment", "5", "--imu-noise-scale", "1"]
-    lamaria = [args.lamaria / s for s in LAMARIA]
+    real += sequences.converted("kitti", kitti)
+    extra = {f"kitti_{d.name}": ["--segment", "5", "--imu-noise-scale", "1"] for d in kitti}
+    lamaria = [args.lamaria / s for s in sequences.LAMARIA]
     missing = [d.name for d in lamaria if not (d / "gt_imu.csv").exists()]
     if missing:
         report.note(f"LaMAria not run, missing {', '.join(missing)} (scripts/data/fetch_lamaria.sh, "
                     "python/lamaria_to_euroc.py)")  # fmt: skip
         lamaria = []
-    for d in lamaria:
-        real[f"lamaria_{d.name}"] = (["--euroc", d, "--cam", "cam0"], FRONT_END_EUROC, d / "gt_imu.csv", "zero",
-                                     d / "mav0" / "imu0" / "sensor.yaml")  # fmt: skip
+    real += sequences.converted("lamaria", lamaria)
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futures = [
-            ex.submit(run, [te, "tracks", *cam, *fe, "--out", out / f"tracks_{name}"], out / f"tracks_{name}.log")
-            for name, (cam, fe, _, _, _) in real.items()
-            if not (out / f"tracks_{name}" / "tracks.csv").exists()
-        ]
+        futures = sequences.submit_tracking(ex, real)
         futures += [ex.submit(run, [de, "sim", "--scenario", s, "--seeds", args.seeds, "--out", out / f"sim_{s}"],
                               out / f"sim_{s}.log") for s in SCENARIOS]  # fmt: skip
         for f in futures:
             f.result()
-        futures = [ex.submit(run, [de, "euroc", *cam, "--gt", gt, "--tracks", out / f"tracks_{name}" / "tracks.csv",
-                                   "--imu-yaml", imu, "--bias", bias, *REAL_NOISE, *extra.get(name, []),
-                                   "--out", out / name],
-                             out / f"{name}.log")
-                   for name, (cam, _, gt, bias, imu) in real.items()]  # fmt: skip
+        futures = [ex.submit(run, [de, "euroc", *q.cam, "--gt", q.gt, "--tracks", sequences.tracks_csv(q),
+                                   "--imu-yaml", q.imu_yaml, "--bias", q.bias, *sequences.REAL_NOISE,
+                                   *extra.get(q.name, []), "--out", out / q.name],
+                             out / f"{q.name}.log")
+                   for q in real]  # fmt: skip
         for f in futures:
             f.result()
 
     datasets = {f"sim {s}": read_csv(out / f"sim_{s}" / "runs.csv") for s in SCENARIOS}
-    datasets["EuRoC MH_01-05"] = [r for s in EUROC for r in read_csv(out / f"euroc_{s}" / "runs.csv")]
+    datasets["EuRoC MH_01-05"] = [r for s in sequences.EUROC for r in read_csv(out / f"euroc_{s}" / "runs.csv")]
     datasets["TUM-VI room1"] = read_csv(out / "tumvi_room1" / "runs.csv")
     if kitti:
         datasets[f"KITTI raw ({len(kitti)} drives)"] = [

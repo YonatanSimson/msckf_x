@@ -19,6 +19,7 @@ fast_rotation (UZH-FPV). The cart is reported only (known overconfident at
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -70,6 +71,26 @@ def evaluate(report, label, col, runs, gated):
     )
 
 
+def variant_cmd(args, sc, fej, d):
+    """msckf_sim_eval command line for one scenario and FEJ setting."""
+    cmd = [tool("msckf_sim_eval"), "--scenario", sc, "--runs", args.runs, "--duration", args.duration, "--out", d]
+    if not fej:
+        cmd.append("--no-fej")
+    if args.min_parallax is not None:
+        cmd += ["--min-parallax", args.min_parallax]
+    if args.clones is not None:
+        cmd += ["--clones", args.clones]
+    return cmd
+
+
+def check_calibration(report, sc, col):
+    ext_rot, ext_pos, td = (col(c)[:, -1] for c in ("ext_rot_err_deg", "ext_pos_err_m", "td_err_ms"))
+    rms = lambda x: float(np.sqrt(np.mean(x**2)))  # noqa: E731
+    report.check(f"{sc}: final extrinsic rotation error RMSE", rms(ext_rot), "<", MAX_EXT_ROT_DEG, "deg")
+    report.check(f"{sc}: final extrinsic translation error RMSE", rms(ext_pos), "<", MAX_EXT_POS_M, "m")
+    report.check(f"{sc}: final time-offset error RMSE", rms(td), "<", MAX_TD_MS, "ms")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--runs", type=int, default=50)
@@ -77,41 +98,26 @@ def main():
     ap.add_argument("--scenarios", nargs="+", default=GATED)
     ap.add_argument("--reported", nargs="*", default=REPORTED)
     ap.add_argument("--min-parallax", type=float, help="deg, overrides the filter's parallax gate (diagnosis)")
+    ap.add_argument("--clones", type=int, help="overrides the filter's window size max_clones (diagnosis)")
+    ap.add_argument("--workers", type=int, default=6, help="variants run in parallel")
     ap.add_argument("--out", default="stage3_sim", help="gate_out subdirectory")
     args = ap.parse_args()
 
     out = gate_out(args.out)
     report = GateReport("Stage 3: MSCKF on simulation")
-    for sc in args.scenarios + args.reported:
+    variants = [(sc, fej) for sc in args.scenarios + args.reported for fej in (True, False)]
+    tag = {v: f"{v[0]}_{'fej' if v[1] else 'nofej'}" for v in variants}
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        jobs = [ex.submit(run, variant_cmd(args, sc, fej, out / tag[sc, fej]), out / f"{tag[sc, fej]}.log")
+                for sc, fej in variants]  # fmt: skip
+        for j in jobs:
+            j.result()
+    for sc, fej in variants:
         gated_sc = sc in args.scenarios
-        for fej in (True, False):
-            tag = f"{sc}_{'fej' if fej else 'nofej'}"
-            d = out / tag
-            cmd = [
-                tool("msckf_sim_eval"),
-                "--scenario",
-                sc,
-                "--runs",
-                args.runs,
-                "--duration",
-                args.duration,
-                "--out",
-                d,
-            ]
-            if not fej:
-                cmd.append("--no-fej")
-            if args.min_parallax is not None:
-                cmd += ["--min-parallax", args.min_parallax]
-            run(cmd, log=out / f"{tag}.log")
-            col, runs = load(d / "epochs.csv", args.runs)
-            label = f"{sc}, {'FEJ' if fej else 'no FEJ'}"
-            evaluate(report, label, col, runs, gated=fej and gated_sc)
-            if fej and gated_sc:
-                ext_rot, ext_pos, td = (col(c)[:, -1] for c in ("ext_rot_err_deg", "ext_pos_err_m", "td_err_ms"))
-                rms = lambda x: float(np.sqrt(np.mean(x**2)))  # noqa: E731
-                report.check(f"{sc}: final extrinsic rotation error RMSE", rms(ext_rot), "<", MAX_EXT_ROT_DEG, "deg")
-                report.check(f"{sc}: final extrinsic translation error RMSE", rms(ext_pos), "<", MAX_EXT_POS_M, "m")
-                report.check(f"{sc}: final time-offset error RMSE", rms(td), "<", MAX_TD_MS, "ms")
+        col, runs = load(out / tag[sc, fej] / "epochs.csv", args.runs)
+        evaluate(report, f"{sc}, {'FEJ' if fej else 'no FEJ'}", col, runs, gated=fej and gated_sc)
+        if fej and gated_sc:
+            check_calibration(report, sc, col)
     return report.finish(out)
 
 
