@@ -6,6 +6,7 @@
 
 #include "msckf/camera/pinhole_radtan.h"
 #include "msckf/filter/feature_update.h"
+#include "msckf/filter/observability.h"
 #include "msckf/filter/propagator.h"
 #include "msckf/geometry/triangulation.h"
 #include "msckf/sim/scenarios.h"
@@ -174,6 +175,27 @@ TEST(FilterUpdate, ProjectionRemovesFeatureMotion) {
 
   EXPECT_EQ(p.r_o.size(), 2 * 5 - 3);
   EXPECT_LT(p.r_o.norm(), 1e-12 * fj.H_f.norm());
+}
+
+// Each observation's Jacobian annihilates the unobservable directions taken at
+// its clone's linearization point (estimates moved off the truth).
+TEST(FilterUpdate, MeasurementJacobianAnnihilatesUnobservableDirections) {
+  Fixture fx = makeFixture(false);
+  fx.state.inject(1e-2 * Eigen::VectorXd::LinSpaced(fx.state.dim(), -1.0, 1.0));
+  FeatureJacobian fj;
+  ASSERT_TRUE(linearizeFeature(fx.state, *camera(), fx.track, fx.clone_of_obs, fx.f, &fj));
+
+  for (size_t j = 0; j < fx.clone_of_obs.size(); ++j) {
+    const Clone& c = fx.state.clones()[fx.clone_of_obs[j]];
+    NavState x;
+    x.R_GI = c.R_GI;
+    x.p_GI = c.p_GI;
+    const Eigen::MatrixXd N = unobservableDirections(x, {fx.f});
+    const Eigen::Matrix<double, 2, 6> H_pose = fj.H_x.block<2, 6>(2 * static_cast<long>(j), fx.state.cloneIndex(j));
+    const Eigen::Matrix<double, 2, 3> H_f = fj.H_f.middleRows<2>(2 * static_cast<long>(j));
+    const Eigen::MatrixXd HN = H_pose * N.topRows<6>() + H_f * N.bottomRows<3>();
+    EXPECT_LT(HN.norm(), 1e-9 * H_pose.norm()) << "observation " << j;
+  }
 }
 
 // With FEJ, the clone blocks are evaluated at the clones' first estimates:

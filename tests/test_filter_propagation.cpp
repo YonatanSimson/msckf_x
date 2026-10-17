@@ -7,6 +7,7 @@
 
 #include "msckf/camera/pinhole_radtan.h"
 #include "msckf/eval/nees.h"
+#include "msckf/filter/observability.h"
 #include "msckf/filter/propagator.h"
 #include "msckf/sim/scenarios.h"
 #include "msckf/sim/simulator.h"
@@ -140,6 +141,26 @@ INSTANTIATE_TEST_SUITE_P(Scenarios, PropagationMonteCarlo,
                          ::testing::Values(Scenario::kHandheld, Scenario::kCart, Scenario::kFastRotation));
 
 // d(clone)/d(t_d) by central differences of propagating to t_cam + t_d.
+// FEJ keeps the unobservable directions: evaluated at any two linearization
+// points (here the truth at t0 and a perturbed state at t1, as the filter's
+// propagated estimates are), Phi maps N(x_0) onto N(x_1).
+TEST(FilterPropagation, TransitionMapsUnobservableDirections) {
+  const SimData d = simulate(Scenario::kFastRotation, false, 1);
+  const double t0 = 0.5, t1 = 1.0;
+  const NavState x0 = truthAt(d, t0).state;
+  NavState x1 = truthAt(d, t1).state;
+  x1.R_GI = x1.R_GI * Sophus::SO3d::exp(Eigen::Vector3d(0.05, -0.03, 0.08));
+  x1.p_GI += Eigen::Vector3d(0.2, -0.1, 0.05);
+  x1.v_GI += Eigen::Vector3d(-0.1, 0.2, 0.03);
+  ImuPreintegration pre(kTrueBg, kTrueBa, ImuNoise{});
+  pre.integrateRange(d.imu, t0, t1);
+
+  const Matrix15d Phi = imuTransition(pre, x0, x1, ImuNoise{}).Phi;
+
+  const Eigen::MatrixXd N0 = unobservableDirections(x0, {}), N1 = unobservableDirections(x1, {});
+  EXPECT_LT((Phi * N0 - N1).norm(), 1e-12 * N1.norm());
+}
+
 TEST(FilterPropagation, CloneTimeOffsetColumn) {
   const SimData d = simulate(Scenario::kHandheld, false, 1);
   const double t_cam = 1.3, eps = 1e-5;

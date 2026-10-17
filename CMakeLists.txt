@@ -33,6 +33,7 @@ add_library(msckf
   src/filter/feature_update.cpp
   src/filter/msckf.cpp
   src/filter/sim_run.cpp
+  src/filter/observability.cpp
   src/imu/preintegration.cpp
   src/imu/propagation.cpp
   src/init/featureless_init.cpp
@@ -53,6 +54,8 @@ target_link_libraries(msckf_eval PRIVATE msckf)
 
 add_executable(msckf_sim_eval tools/msckf_sim_eval.cpp)
 target_link_libraries(msckf_sim_eval PRIVATE msckf)
+add_executable(msckf_observability tools/msckf_observability.cpp)
+target_link_libraries(msckf_observability PRIVATE msckf)
 
 # Vision: image utilities, the minimal KLT tracker, bearing RANSAC. Grows into
 # the Stage 2 front end. Kept out of msckf so the estimator core does not

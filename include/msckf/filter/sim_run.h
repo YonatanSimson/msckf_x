@@ -38,6 +38,11 @@ struct SimEpoch {
   Eigen::Vector3d ext_theta_err = Eigen::Vector3d::Zero();  // Log(R_IC_est^T R_IC_true)
   Eigen::Vector3d ext_p_err = Eigen::Vector3d::Zero();
   double td_err = 0.0;
+  // IMU state at the image time (IMU clock): the propagated estimate (where
+  // FEJ linearizes) and the updated one, with the updated biases.
+  double t_state = 0.0;
+  NavState nav_prior, nav_post;
+  Eigen::Vector3d gyro_bias = Eigen::Vector3d::Zero(), acc_bias = Eigen::Vector3d::Zero();
   int observations = 0;  // in the image
   UpdateStats update;
   double time_ms = 0.0;
