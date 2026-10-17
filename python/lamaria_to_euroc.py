@@ -9,8 +9,9 @@ scripts/data/fetch_lamaria.sh), next to the downloaded aria/ folder:
                                   the factory IMU calibration is not applied)
   <seq>/mav0/imu0/sensor.yaml     noise densities from the same JSON
   <seq>/gt_imu.csv                pseudo-dense ground truth (pGT) as world_from_imu,
-                                  pose-only TUM-VI gt_imu.csv layout; only when
-                                  the sequence has pGT
+                                  pose-only TUM-VI gt_imu.csv layout, without
+                                  frozen (repeated) poses; only when the
+                                  sequence has pGT
 
 Conventions (lamaria/utils/aria.py): the body frame is the right IMU, so the
 JSON's T_b_s is T_imu_cam; JSON qvec and pGT quaternions are x, y, z, w
@@ -23,7 +24,7 @@ the frames are right: with the control-point pGT read as world_from_imu it is
 
     python python/lamaria_to_euroc.py [SEQ_DIR...]
 
-SEQ_DIR defaults to every <MSCKF_DATA>/lamaria/training/*.
+SEQ_DIR defaults to every <MSCKF_DATA_LARGE>/lamaria/training/*.
 """
 
 import argparse
@@ -34,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from msckf_gates.common import data_dir, quat_to_R, quat_wxyz
+from msckf_gates.common import large_data_dir, quat_to_R, quat_wxyz
 
 
 def rotation(q_xyzw):
@@ -91,6 +92,18 @@ def write_imu(seq_dir, imu):
     (out / "sensor.yaml").write_text(yaml.safe_dump(sensor, sort_keys=False))
 
 
+def drop_frozen_poses(pgt):
+    """pGT rows whose pose differs from both neighbours. MPS repeats its first
+    pose for the first ~0.8 s (16-18 rows) while the head already turns, and
+    holds a pose for a row or two mid-sequence: those rows are not truth."""
+    pose = pgt[:, 1:]
+    same = np.all(pose[1:] == pose[:-1], axis=1)
+    frozen = np.zeros(len(pgt), dtype=bool)
+    frozen[1:] |= same
+    frozen[:-1] |= same
+    return pgt[~frozen]
+
+
 def imu_poses(pgt, T_rig_imu):
     """pGT rows 't_ns tx ty tz qx qy qz qw' (world_from_rig) -> rows
     't_ns tx ty tz qw qx qy qz' of world_from_imu."""
@@ -140,7 +153,8 @@ def convert(seq_dir):
     if not pgt_path.exists():
         print(f"{name}: no pGT, cameras and IMU only")
         return
-    gt = imu_poses(np.loadtxt(pgt_path, dtype=np.float64), pgt_rig_from_imu(seq_dir, calib))
+    pgt = np.loadtxt(pgt_path, dtype=np.float64)
+    gt = imu_poses(drop_frozen_poses(pgt), pgt_rig_from_imu(seq_dir, calib))
     write_ground_truth(gt, seq_dir / "gt_imu.csv")
     imu = np.loadtxt(seq_dir / "aria" / "imu0" / "data.csv", delimiter=",", dtype=np.float64)
     f = mean_world_specific_force(imu, gt)
@@ -153,7 +167,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("sequences", nargs="*", type=Path)
     args = ap.parse_args()
-    seqs = args.sequences or sorted(p.parent for p in (data_dir() / "lamaria" / "training").glob("*/aria"))
+    seqs = args.sequences or sorted(p.parent for p in (large_data_dir() / "lamaria" / "training").glob("*/aria"))
     if not seqs:
         raise SystemExit("no sequences (scripts/data/fetch_lamaria.sh)")
     for s in seqs:

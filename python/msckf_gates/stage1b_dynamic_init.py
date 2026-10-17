@@ -146,7 +146,7 @@ def main():
     ap.add_argument(
         "--lamaria",
         type=Path,
-        default=data_dir() / "lamaria" / "training",
+        default=large_data_dir() / "lamaria" / "training",
         help="LaMAria training sequences with python/lamaria_to_euroc.py's layout; reported if present",
     )
     ap.add_argument("--seeds", type=int, default=10)

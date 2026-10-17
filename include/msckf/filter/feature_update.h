@@ -75,9 +75,21 @@ bool linearizeFeature(const FilterState& s, const CameraModel& camera, const Fea
                       const std::vector<size_t>& clone_of_obs, const AnchoredPoint& f, FeatureJacobian* out,
                       const AnchoredPoint* f_lin = nullptr);
 
+// The feature's rows projected onto the left nullspace of H_f, which removes
+// the feature: the last 2M - rank(H_f) rows of Q^T. Rank-revealing (column
+// pivoting), so a rank-deficient H_f (a point at infinity seen without
+// baseline: zero rho column) keeps every row that carries information instead
+// of hiding an inconsistency in a discarded one.
+struct ProjectedResidual {
+  Eigen::MatrixXd H_o;
+  Eigen::VectorXd r_o;
+};
+ProjectedResidual projectOutFeature(FeatureJacobian fj);
+
 // MSCKF update with the given tracks (plan, Stage 3 "Feature update"): per
 // feature, triangulate from the current clone estimates, linearize, project
-// onto the left nullspace of H_f, chi-square gate; then stack, compress by QR
+// onto the left nullspace of H_f (projectOutFeature), chi-square gate with
+// one degree of freedom per remaining row; then stack, compress by QR
 // when there are more rows than states, and apply a Joseph-form update.
 // Observations at times without a clone are ignored.
 UpdateStats featureUpdate(FilterState& s, const CameraModel& camera, const std::vector<FeatureTrack>& tracks,

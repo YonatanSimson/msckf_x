@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchmark_compare import resolve_baseline
+from benchmark_compare import compare, resolve_baseline
 
 
 class ResolveBaselineTest(unittest.TestCase):
@@ -34,6 +34,27 @@ class ResolveBaselineTest(unittest.TestCase):
     def test_missing_baseline_is_an_error(self):
         with self.assertRaises(SystemExit):
             resolve_baseline(Path("2026-01-01_000000"), self.run)
+
+
+def run_of(value):
+    return {"metrics": [{"name": "gravity RMSE", "value": value, "better": "lower"}]}
+
+
+class CompareNanTest(unittest.TestCase):
+    def test_metric_becoming_nan_is_degraded(self):
+        flags = compare(run_of(float("nan")), run_of(3.4), 0.02, 1e-9)
+
+        self.assertEqual([f[0] for f in flags], ["DEGRADED"])
+
+    def test_metric_recovering_from_nan_is_improved(self):
+        flags = compare(run_of(3.4), run_of(float("nan")), 0.02, 1e-9)
+
+        self.assertEqual([f[0] for f in flags], ["IMPROVED"])
+
+    def test_nan_in_both_runs_is_not_flagged(self):
+        flags = compare(run_of(float("nan")), run_of(float("nan")), 0.02, 1e-9)
+
+        self.assertEqual(flags, [])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <map>
 #include <mutex>
+#include <utility>
 
 namespace msckf::filter {
 
@@ -64,6 +65,15 @@ bool linearizeFeature(const FilterState& s, const CameraModel& camera, const Fea
   return true;
 }
 
+ProjectedResidual projectOutFeature(FeatureJacobian fj) {
+  Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(fj.H_f);
+  qr.setThreshold(1e-9);
+  fj.H_x.applyOnTheLeft(qr.householderQ().transpose());
+  fj.r.applyOnTheLeft(qr.householderQ().transpose());
+  const auto rows = fj.r.size() - qr.rank();
+  return {fj.H_x.bottomRows(rows), fj.r.tail(rows)};
+}
+
 UpdateStats featureUpdate(FilterState& s, const CameraModel& camera, const std::vector<FeatureTrack>& tracks,
                           const UpdateOptions& options) {
   UpdateStats stats;
@@ -117,13 +127,10 @@ UpdateStats featureUpdate(FilterState& s, const CameraModel& camera, const std::
       continue;
     }
 
-    // Left nullspace of H_f: the last 2M - 3 rows of Q^T, applied in place.
-    const Eigen::HouseholderQR<Eigen::MatrixXd> qr(fj.H_f);
-    fj.H_x.applyOnTheLeft(qr.householderQ().transpose());
-    fj.r.applyOnTheLeft(qr.householderQ().transpose());
-    const int rows = static_cast<int>(fj.r.size()) - 3;
-    const Eigen::MatrixXd H_o = fj.H_x.bottomRows(rows);
-    const Eigen::VectorXd r_o = fj.r.tail(rows);
+    const ProjectedResidual projected = projectOutFeature(std::move(fj));
+    const Eigen::MatrixXd& H_o = projected.H_o;
+    const Eigen::VectorXd& r_o = projected.r_o;
+    const int rows = static_cast<int>(r_o.size());
 
     // H_o is non-zero only in the observing clones' and the extrinsic columns.
     std::vector<int> cols;

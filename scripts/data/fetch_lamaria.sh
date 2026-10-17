@@ -7,16 +7,17 @@
 #
 # SEQUENCE is a training sequence name, e.g. R_01_easy, R_08_hard,
 # sequence_1_19. Default: all training sequences (~170 GB).
-# DEST defaults to $MSCKF_DATA/lamaria, with MSCKF_DATA defaulting to ~/data.
+# DEST defaults to $MSCKF_DATA_LARGE/lamaria, with MSCKF_DATA_LARGE defaulting
+# to /mnt/c/Users/user/data.
 # Layout: DEST/training/SEQ/{aria/{cam0,cam1,imu0},pinhole_calibrations,
 # ground_truth/{pGT,control_points}}. Sequences already extracted are skipped.
 set -euo pipefail
 
-dest="${MSCKF_DATA:-$HOME/data}/lamaria"
+dest="${MSCKF_DATA_LARGE:-/mnt/c/Users/user/data}/lamaria"
 while getopts "d:h" opt; do
   case "$opt" in
     d) dest="$OPTARG" ;;
-    h) sed -n '2,12p' "$0"; exit 0 ;;
+    h) sed -n '2,13p' "$0"; exit 0 ;;
     *) exit 2 ;;
   esac
 done
@@ -30,13 +31,32 @@ list_training() {
 }
 
 # Fetches $1 to $2 unless absent on the server (GT exists only for some).
+# Downloads to $2.part first, so an interrupted fetch is retried next time;
+# any failure other than a 404 stops the script.
 fetch_optional() {
   [ -f "$2" ] && return 0
   mkdir -p "$(dirname "$2")"
-  curl -fsL -o "$2" "$1" && return 0
-  rm -f "$2"
+  local code
+  code=$(curl -sL -o "$2.part" -w '%{http_code}' "$1") || code=error
+  if [ "$code" = 200 ]; then
+    mv "$2.part" "$2"
+    return 0
+  fi
+  rm -f "$2.part"
   rmdir -p --ignore-fail-on-non-empty "$(dirname "$2")"
-  echo "  (not on server: ${1#"$base"/})"
+  if [ "$code" = 404 ]; then
+    echo "  (not on server: ${1#"$base"/})"
+    return 0
+  fi
+  echo "${1#"$base"/}: download failed (HTTP $code)" >&2
+  exit 1
+}
+
+# Extraction finished: the marker written after unzip, or (sequences extracted
+# before the marker existed) every sensor's data.csv present.
+extracted() {
+  [ -f "$1/.extracted" ] && return 0
+  [ -f "$1/aria/imu0/data.csv" ] && [ -f "$1/aria/cam0/data.csv" ] && [ -f "$1/aria/cam1/data.csv" ]
 }
 
 remote_size() {
@@ -48,7 +68,7 @@ fetch_sequence() {
   fetch_optional "$base/pinhole_calibrations/training/$s.json" "$dir/pinhole_calibrations/$s.json"
   fetch_optional "$base/ground_truth/pseudo_dense/$s.txt" "$dir/ground_truth/pGT/$s.txt"
   fetch_optional "$base/ground_truth/sparse/$s.json" "$dir/ground_truth/control_points/$s.json"
-  if [ -f "$dir/aria/imu0/data.csv" ]; then
+  if extracted "$dir"; then
     echo "$s: already present"
     return
   fi
@@ -59,8 +79,14 @@ fetch_sequence() {
   local want have
   want=$(remote_size "$url")
   have=$(stat -c %s "$zip")
-  [ "$want" = "$have" ] || { echo "$s: size mismatch ($have != $want)" >&2; exit 1; }
+  if [ -z "$want" ]; then
+    echo "$s: server sent no size, size check skipped" >&2
+  elif [ "$want" != "$have" ]; then
+    echo "$s: size mismatch ($have != $want)" >&2
+    exit 1
+  fi
   unzip -q -o "$zip" -d "$dest/training"
+  touch "$dir/.extracted"
   rm -f "$zip"
   echo "$s: extracted to $dir"
 }

@@ -127,7 +127,7 @@ TEST(FilterUpdate, JacobiansMatchFiniteDifferences) {
 }
 
 // A point at infinity (rho = 0): the Jacobians stay finite and correct, and
-// only clone rotations (and the extrinsic rotation) are constrained.
+// only clone and extrinsic rotations are constrained.
 TEST(FilterUpdate, PointAtInfinityConstrainsRotationOnly) {
   Fixture fx = makeFixture(false);
   AnchoredPoint f = fx.f;
@@ -143,6 +143,37 @@ TEST(FilterUpdate, PointAtInfinityConstrainsRotationOnly) {
     EXPECT_EQ(fj.H_x.middleCols<3>(fx.state.cloneIndex(i) + 3).norm(), 0.0);
     EXPECT_GT(fj.H_x.middleCols<3>(fx.state.cloneIndex(i)).norm(), 1.0);
   }
+  EXPECT_EQ(fj.H_x.middleCols<3>(fx.state.extrinsicIndex() + 3).norm(), 0.0);
+}
+
+// Two observations, H_f with a zero rho column (no baseline) and a residual
+// orthogonal to H_f: an inconsistent track. Every row of it must survive.
+TEST(FilterUpdate, ProjectionKeepsInconsistencyWhenFeatureIsRankDeficient) {
+  FeatureJacobian fj;
+  fj.H_f = Eigen::MatrixXd::Zero(4, 3);
+  fj.H_f.leftCols<2>() << 1.0, 0.2, -0.3, 0.9, 0.8, -0.1, 0.1, 1.1;
+  fj.H_x = Eigen::MatrixXd::Identity(4, 6);
+  const Eigen::HouseholderQR<Eigen::MatrixXd> qr(fj.H_f.leftCols<2>());
+  const Eigen::MatrixXd Q = qr.householderQ();
+  fj.r = 40.0 * (Q.col(2) + Q.col(3)).normalized();
+
+  const ProjectedResidual p = projectOutFeature(fj);
+
+  EXPECT_EQ(p.r_o.size(), 2);
+  EXPECT_NEAR(p.r_o.norm(), 40.0, 1e-9);
+}
+
+// A residual that a change of the feature explains is removed entirely.
+TEST(FilterUpdate, ProjectionRemovesFeatureMotion) {
+  Fixture fx = makeFixture(false);
+  FeatureJacobian fj;
+  ASSERT_TRUE(linearizeFeature(fx.state, *camera(), fx.track, fx.clone_of_obs, fx.f, &fj));
+  fj.r = fj.H_f * Eigen::Vector3d(0.01, -0.02, 0.05);
+
+  const ProjectedResidual p = projectOutFeature(fj);
+
+  EXPECT_EQ(p.r_o.size(), 2 * 5 - 3);
+  EXPECT_LT(p.r_o.norm(), 1e-12 * fj.H_f.norm());
 }
 
 // With FEJ, the clone blocks are evaluated at the clones' first estimates:

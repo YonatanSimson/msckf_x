@@ -44,6 +44,14 @@ def previous_run(run: Path, benchmark: str) -> Path | None:
     return None
 
 
+def nan_change(name: str, a: float, b: float) -> list[tuple[str, str, str]]:
+    """A metric that became NaN (e.g. an RMSE over no accepted runs) is worse
+    whichever its better direction; one that stopped being NaN is better."""
+    if math.isnan(a) == math.isnan(b):
+        return []
+    return [("DEGRADED" if math.isnan(b) else "IMPROVED", name, f"{a:.4g} -> {b:.4g}")]
+
+
 def compare(new: dict[str, Any], old: dict[str, Any], rel_tol: float, abs_tol: float) -> list[tuple[str, str, str]]:
     """[(flag, metric, detail)] for one benchmark."""
     out = []
@@ -67,6 +75,9 @@ def compare(new: dict[str, Any], old: dict[str, Any], rel_tol: float, abs_tol: f
             continue
         a, b = o["value"], m["value"]
         if a is None or b is None or m.get("better") is None:
+            continue
+        if math.isnan(a) or math.isnan(b):
+            out += nan_change(name, a, b)
             continue
         delta = b - a
         if abs(delta) <= max(abs_tol, rel_tol * abs(a)):

@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from lamaria_to_euroc import imu_poses, mean_world_specific_force, rigid
+from lamaria_to_euroc import drop_frozen_poses, imu_poses, mean_world_specific_force, rigid
 from msckf_gates.common import quat_to_R, quat_wxyz
 
 GRAVITY = np.array([0.0, 0.0, 9.81])
@@ -69,6 +69,21 @@ class SpecificForceTest(unittest.TestCase):
         f = mean_world_specific_force(imu, gt)
 
         np.testing.assert_allclose(f, GRAVITY, atol=1e-9)
+
+
+class DropFrozenPosesTest(unittest.TestCase):
+    def test_drops_leading_run_and_mid_sequence_repeat(self):
+        poses = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [1, 0, 0], [2, 0, 0], [2, 0, 0], [3, 0, 0]]
+        pgt = np.array([[k, *p, 0, 0, 0, 1] for k, p in enumerate(poses)], dtype=float)
+
+        kept = drop_frozen_poses(pgt)
+
+        np.testing.assert_array_equal(kept[:, 0], [3, 6])
+
+    def test_keeps_moving_poses(self):
+        pgt = np.array([[k, k, 0, 0, 0, 0, 0, 1] for k in range(5)], dtype=float)
+
+        np.testing.assert_array_equal(drop_frozen_poses(pgt), pgt)
 
 
 if __name__ == "__main__":
