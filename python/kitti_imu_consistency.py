@@ -24,20 +24,11 @@ from pathlib import Path
 
 import numpy as np
 
-from msckf_gates.common import large_data_dir
+from msckf_gates.common import large_data_dir, quat_to_R
 
 G = np.array([0.0, 0.0, -9.81])
 WINDOW = 100  # samples at 100 Hz: 1 s
 CHI3_MEDIAN = 1.54
-
-
-def quat_to_R(q):
-    w, x, y, z = q
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
-    ])  # fmt: skip
 
 
 def so3_exp(w):

@@ -4,6 +4,7 @@
 
 #include "msckf/geometry/triangulation.h"
 
+#include <cmath>
 #include <vector>
 
 namespace msckf {
@@ -37,7 +38,8 @@ TEST(Triangulation, RecoversPointFromExactBearings) {
 
 TEST(Triangulation, RecoversPointPastNinetyDegreesOffAxis) {
   // 120 deg off the anchor's optical axis: no point on its z = 1 plane.
-  const Eigen::Vector3d X(4.0 * std::sin(2.0944), 0.5, 4.0 * std::cos(2.0944));
+  const double off_axis = 2.0 * M_PI / 3.0;
+  const Eigen::Vector3d X(4.0 * std::sin(off_axis), 0.5, 4.0 * std::cos(off_axis));
   const Rays rays = raysTo(X, {{0, 0, 0}, {0, 0.3, 0}, {0, 0.6, 0.2}}, Sophus::SO3d());
   Eigen::Vector3d est;
   double parallax = 0.0;
@@ -57,6 +59,20 @@ TEST(Triangulation, RecoversFarPointAtLowParallax) {
 
   EXPECT_LT(parallax, 0.02);
   EXPECT_LT((est - X).norm() / X.norm(), 1e-6);
+}
+
+TEST(Triangulation, RejectsParallelRays) {
+  // Cameras at one centre looking at one point: identical rays in the world.
+  const Eigen::Vector3d X(0.4, -0.3, 5.0);
+  Rays rays;
+  for (const Sophus::SO3d& R : {Sophus::SO3d(), Sophus::SO3d::rotY(0.1), Sophus::SO3d::rotX(0.1)}) {
+    rays.T_GC.emplace_back(R, Eigen::Vector3d::Zero());
+    rays.bearings.push_back((R.inverse() * X).normalized());
+  }
+  Eigen::Vector3d est;
+  double parallax = 0.0;
+
+  EXPECT_FALSE(triangulate(rays.T_GC, rays.bearings, &est, &parallax));
 }
 
 TEST(Triangulation, RejectsPointBehindCameras) {

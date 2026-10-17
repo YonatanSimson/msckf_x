@@ -98,7 +98,7 @@ bool triangulate(const std::vector<Sophus::SE3d>& T_GC, const std::vector<Eigen:
     x += dx;
     if (dx.norm() < 1e-9 * (1.0 + x.norm())) break;
   }
-  if (x.z() <= 0.0) return false;
+  if (!x.allFinite() || x.z() <= 0.0) return false;  // NaN fails every comparison
   *X = T_GA * (Eigen::Vector3d(x.x(), x.y(), 1.0) / x.z());
   for (size_t i = 0; i < b.size(); ++i) {
     if ((T_GC[i].inverse() * *X).dot(b[i]) <= 0.0) return false;

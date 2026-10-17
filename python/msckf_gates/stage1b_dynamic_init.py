@@ -12,6 +12,10 @@ the start of every 10 s segment, windows 0.1-1.0 s) on:
   TUM-VI       room1, cam0; zero bias (its IMU data is calibrated)
   KITTI raw    every drive converted by python/kitti_raw_to_euroc.py (OXTS
                IMU at 100 Hz, zero bias, a start every 5 s); reported only
+  LaMAria      R_01-R_03, the short "easy" sequences (scripts/data/fetch_lamaria.sh,
+               python/lamaria_to_euroc.py), cam0; egocentric (Aria glasses),
+               raw IMU, zero bias, MPS pseudo ground truth at every frame;
+               reported, its retry metrics recorded for benchmark_compare
 
 with bearings from the adopted front end (tracker_eval tracks with
 msckf_gates.common.FRONT_END_*) and each dataset's IMU noise densities. Three
@@ -33,7 +37,7 @@ metrics define them:
   (errors as RMSE, not medians (user, 2026-10-11): the tail counts)
   simulation only: mean velocity NEES at the hand-off (3 dof, yaw free) in its
       95 % band (plan: initial NEES on simulation)
-Car, cart, fast rotation and KITTI are reported. The plan's scale metric is a
+Car, cart, fast rotation, KITTI and LaMAria are reported. The plan's scale metric is a
 Sim(3) fit over 10 s of VIO (Stage 3); each solution's window scale is
 reported (RMSE of the window scale error of dynamic hand-offs; static and
 in-place starts have no scale). Every method at fixed window lengths (the paper's protocol) is
@@ -63,6 +67,11 @@ from msckf_gates.common import (
 
 EUROC = ["MH_01_easy", "MH_02_easy", "MH_03_medium", "MH_04_difficult", "MH_05_difficult"]
 SCENARIOS = ["handheld", "car", "cart", "fast_rotation"]
+# One LaMAria sequence per difficulty, from the MPS-ground-truth set (R_01-R_10;
+# the control-point sequences' pGT has keyframes up to 1 s apart, too sparse
+# for velocity truth). All ten cost ~20 min of tracking per run.
+LAMARIA = ["R_01_easy", "R_02_easy", "R_03_easy"]
+LAMARIA_NAME = "LaMAria R_01-03"
 # Real-data noise inflation, tuned by python/tune_init_noise.py on EuRoC
 # V1_01-03 and TUM-VI room2 (no gate uses them): IMU noise densities x4 and
 # 2 px bearings bring V1_02, V1_03 and room2 into their NEES bands (V1_01, slow
@@ -70,6 +79,7 @@ SCENARIOS = ["handheld", "car", "cart", "fast_rotation"]
 REAL_NOISE = ["--imu-noise-scale", "4", "--pixel-sigma", "2"]
 METHODS = ["refined", "nr", "linear", "okvis"]  # per window length; "retry" is summarized separately
 GATED = ("sim handheld", "EuRoC MH_01-05", "TUM-VI room1")
+RECORDED = (LAMARIA_NAME,)  # not gated; retry metrics tracked across benchmark runs
 MAX_WINDOW = 5.0  # s, the retry limit (DynamicInitConfig::max_window)
 MIN_SUCCESS = 0.95
 MAX_TIME_TO_INIT = 1.0  # s, median (plan: <= 1 s handheld)
@@ -133,6 +143,12 @@ def main():
         default=large_data_dir() / "kitti" / "euroc",
         help="KITTI raw drives in EuRoC layout (python/kitti_raw_to_euroc.py); reported if present",
     )
+    ap.add_argument(
+        "--lamaria",
+        type=Path,
+        default=data_dir() / "lamaria" / "training",
+        help="LaMAria training sequences with python/lamaria_to_euroc.py's layout; reported if present",
+    )
     ap.add_argument("--seeds", type=int, default=10)
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args()
@@ -166,6 +182,15 @@ def main():
         # The converter writes the OXTS noise measured against ground truth
         # (python/kitti_imu_consistency.py): no further IMU inflation.
         extra[name] = ["--segment", "5", "--imu-noise-scale", "1"]
+    lamaria = [args.lamaria / s for s in LAMARIA]
+    missing = [d.name for d in lamaria if not (d / "gt_imu.csv").exists()]
+    if missing:
+        report.note(f"LaMAria not run, missing {', '.join(missing)} (scripts/data/fetch_lamaria.sh, "
+                    "python/lamaria_to_euroc.py)")  # fmt: skip
+        lamaria = []
+    for d in lamaria:
+        real[f"lamaria_{d.name}"] = (["--euroc", d, "--cam", "cam0"], FRONT_END_EUROC, d / "gt_imu.csv", "zero",
+                                     d / "mav0" / "imu0" / "sensor.yaml")  # fmt: skip
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futures = [
             ex.submit(run, [te, "tracks", *cam, *fe, "--out", out / f"tracks_{name}"], out / f"tracks_{name}.log")
@@ -191,6 +216,8 @@ def main():
         datasets[f"KITTI raw ({len(kitti)} drives)"] = [
             r for d in kitti for r in read_csv(out / f"kitti_{d.name}" / "runs.csv")
         ]
+    if lamaria:
+        datasets[LAMARIA_NAME] = [r for d in lamaria for r in read_csv(out / f"lamaria_{d.name}" / "runs.csv")]
     # Gated: the pipeline with retry (initializeDynamic), as the system runs.
     for name, rows in datasets.items():
         rr = [r for r in rows if r["method"] == "retry"]
@@ -223,6 +250,11 @@ def main():
                 mean = float(nees.mean()) if len(nees) else nan
                 report.check(f"{name}: velocity NEES mean <= band upper {hi:.2f} (3 dof)", mean, "<=", hi)
                 report.check(f"{name}: velocity NEES mean >= band lower {lo:.2f} (3 dof)", mean, ">=", lo)
+        if name in RECORDED:
+            report.record(f"{name}: success rate (retry up to {MAX_WINDOW:g} s)", 100 * success, "higher", "%")
+            report.record(f"{name}: time to initialize, median", t_med, "lower", "s")
+            report.record(f"{name}: gravity error RMSE", rms(grav), "lower", "deg")
+            report.record(f"{name}: velocity error RMSE", rms(vel), "lower", "m/s")
         fails = collections.Counter(r["reason"] for r in rr if r["ok"] != "1")
         report.note(f"{name}, retry: success {len(ok)}/{len(rr)} ({100 * success:.0f}%), time to initialize median "
                     f"{t_med:.2f} s, p90 {np.percentile(t, 90) if len(t) else nan:.2f} s; accepted (RMSE): gravity "

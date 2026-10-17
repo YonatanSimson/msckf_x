@@ -79,6 +79,15 @@ def compare(new: dict[str, Any], old: dict[str, Any], rel_tol: float, abs_tol: f
     return out
 
 
+def resolve_baseline(baseline: Path, run: Path) -> Path:
+    """The baseline run directory: a path, or a bare run name (as
+    scripts/run_benchmarks.sh -b takes) next to the run."""
+    found = next((p for p in (baseline, run.parent / baseline) if p.is_dir()), None)
+    if found is None:
+        raise SystemExit(f"baseline run not found: {baseline} (nor in {run.parent})")
+    return found.resolve()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("run", type=Path)
@@ -88,12 +97,13 @@ def main() -> None:
     args = ap.parse_args()
 
     run = args.run.resolve()
+    baseline = resolve_baseline(args.baseline, run) if args.baseline else None
     order = {"REGRESSION": 0, "DEGRADED": 1, "IMPROVED": 2, "NEW": 3, "GONE": 4}
     md = [f"# Benchmark comparison: {run.name}", ""]
     bad = False
     for bench in sorted(p.parent.name for p in run.glob("*/metrics.json")):
         new = load(run / bench / "metrics.json")
-        base = args.baseline.resolve() if args.baseline else previous_run(run, bench)
+        base = baseline or previous_run(run, bench)
         status = {True: "PASS", False: "FAIL", None: "-"}[new.get("passed")]
         md += [f"## {bench}: {status}", ""]
         if base is None or not (base / bench / "metrics.json").exists():

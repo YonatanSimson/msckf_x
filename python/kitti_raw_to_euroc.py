@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from msckf_gates.common import large_data_dir
+from msckf_gates.common import large_data_dir, quat_wxyz
 
 # OXTS RT3003 outputs are the unit's own filtered rates and accelerations, and
 # its datasheet gives no white-noise densities for them. Effective densities
@@ -104,15 +104,6 @@ def rot(roll, pitch, yaw):
     Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
     Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
     return Rz @ Ry @ Rx
-
-
-def quat_wxyz(R):
-    w = np.sqrt(max(0.0, 1 + R[0, 0] + R[1, 1] + R[2, 2])) / 2
-    x = np.copysign(np.sqrt(max(0.0, 1 + R[0, 0] - R[1, 1] - R[2, 2])) / 2, R[2, 1] - R[1, 2])
-    y = np.copysign(np.sqrt(max(0.0, 1 - R[0, 0] + R[1, 1] - R[2, 2])) / 2, R[0, 2] - R[2, 0])
-    z = np.copysign(np.sqrt(max(0.0, 1 - R[0, 0] - R[1, 1] + R[2, 2])) / 2, R[1, 0] - R[0, 1])
-    q = np.array([w, x, y, z])
-    return q / np.linalg.norm(q)
 
 
 def convert(drive_dir: Path, out_root: Path):

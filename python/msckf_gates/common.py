@@ -10,6 +10,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -113,9 +115,15 @@ class GateReport:
     title: str
     checks: list = field(default_factory=list)
     notes: list = field(default_factory=list)  # informational lines (not gated)
+    records: list = field(default_factory=list)  # tracked by benchmark_compare, not gated
 
     def check(self, name, value, op, threshold, unit=""):
         self.checks.append(Check(name, value, op, threshold, unit))
+
+    def record(self, name, value, better, unit=""):
+        """A metric tracked across benchmark runs without a pass/fail threshold;
+        better is "lower", "higher" or None."""
+        self.records.append({"name": name, "value": value, "unit": unit, "better": better})
 
     def note(self, line):
         self.notes.append(line)
@@ -136,10 +144,11 @@ class GateReport:
 
     def metrics(self):
         """Machine-readable checks for python/benchmark_compare.py: each value,
-        its threshold, and which direction is better (from the check's op)."""
+        its threshold, and which direction is better (from the check's op);
+        then the recorded metrics."""
         return [{"name": c.name, "value": c.value, "unit": c.unit, "op": c.op, "threshold": c.threshold,
                  "better": "lower" if c.op in ("<=", "<") else "higher", "passed": c.passed}
-                for c in self.checks]
+                for c in self.checks] + self.records
 
     def finish(self, out_dir):
         md = self.markdown()
@@ -171,3 +180,23 @@ def nees_band(n, dof):
     k = n * dof
     c = 2.0 / (9.0 * k)
     return k * (1 - c - 1.96 * math.sqrt(c)) ** 3 / n, k * (1 - c + 1.96 * math.sqrt(c)) ** 3 / n
+
+
+def quat_to_R(q):
+    """Rotation matrix of a unit quaternion (w, x, y, z)."""
+    w, x, y, z = q
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ])  # fmt: skip
+
+
+def quat_wxyz(R):
+    """Unit quaternion (w, x, y, z) of a rotation matrix."""
+    w = np.sqrt(max(0.0, 1 + R[0, 0] + R[1, 1] + R[2, 2])) / 2
+    x = np.copysign(np.sqrt(max(0.0, 1 + R[0, 0] - R[1, 1] - R[2, 2])) / 2, R[2, 1] - R[1, 2])
+    y = np.copysign(np.sqrt(max(0.0, 1 - R[0, 0] + R[1, 1] - R[2, 2])) / 2, R[0, 2] - R[2, 0])
+    z = np.copysign(np.sqrt(max(0.0, 1 - R[0, 0] - R[1, 1] + R[2, 2])) / 2, R[1, 0] - R[0, 1])
+    q = np.array([w, x, y, z])
+    return q / np.linalg.norm(q)
