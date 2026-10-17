@@ -16,7 +16,6 @@
 // true depth) of every used feature.
 // The Stage 3 gate (python/msckf_gates/stage3_sim.py) computes the metrics.
 
-#include "msckf/camera/pinhole_radtan.h"
 #include "msckf/eval/nees.h"
 #include "msckf/filter/sim_run.h"
 #include "msckf/sim/scenarios.h"
@@ -44,19 +43,9 @@ struct Args {
   bool fej = true, extrinsic = true, time_offset = true, perturb = true;
 };
 
-Scenario parseScenario(const std::string& s) {
-  if (s == "handheld") return Scenario::kHandheld;
-  if (s == "cart") return Scenario::kCart;
-  if (s == "fast_rotation") return Scenario::kFastRotation;
-  if (s == "car") return Scenario::kCar;
-  throw std::invalid_argument("unknown scenario " + s);
-}
-
 int run(const Args& a) {
   const Scenario scenario = parseScenario(a.scenario);
-  Eigen::VectorXd k(9);  // EuRoC cam0
-  k << 458.654, 457.296, 367.215, 248.375, -0.28340811, 0.07395907, 0.00019359, 1.76187114e-05, 0.0;
-  const auto camera = std::make_shared<PinholeRadtan>(752, 480, k);
+  const CameraModelPtr camera = simulatedCamera();
   filter::MsckfOptions options;
   options.state.fej = a.fej;
   options.state.estimate_extrinsic = a.extrinsic;

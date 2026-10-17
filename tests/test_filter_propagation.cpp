@@ -140,7 +140,6 @@ TEST_P(PropagationMonteCarlo, CovarianceMatchesMonteCarlo) {
 INSTANTIATE_TEST_SUITE_P(Scenarios, PropagationMonteCarlo,
                          ::testing::Values(Scenario::kHandheld, Scenario::kCart, Scenario::kFastRotation));
 
-// d(clone)/d(t_d) by central differences of propagating to t_cam + t_d.
 // FEJ keeps the unobservable directions: evaluated at any two linearization
 // points (here the truth at t0 and a perturbed state at t1, as the filter's
 // propagated estimates are), Phi maps N(x_0) onto N(x_1).
@@ -161,6 +160,31 @@ TEST(FilterPropagation, TransitionMapsUnobservableDirections) {
   EXPECT_LT((Phi * N0 - N1).norm(), 1e-12 * N1.norm());
 }
 
+// With FEJ, propagation linearizes at the propagated estimate, not at the
+// estimate an update moved: P and Phi_last use imuTransition at nav_fej.
+TEST(FilterPropagation, FejLinearizesAtPropagatedEstimate) {
+  const SimData d = simulate(Scenario::kFastRotation, false, 1);
+  FilterState x = stateAt(truthAt(d, 1.0));
+  propagate(x, d.imu, 1.1, ImuNoise{});
+  Eigen::VectorXd dx = Eigen::VectorXd::Zero(x.dim());
+  dx.head<9>() = Eigen::VectorXd::LinSpaced(9, -0.05, 0.05);
+  x.inject(dx);
+  const NavState first = x.nav_fej, updated = x.nav;
+  const Matrix15d P0 = x.P.topLeftCorner<kDim, kDim>();
+
+  propagate(x, d.imu, 1.2, ImuNoise{});
+
+  ImuPreintegration pre(x.gyro_bias, x.acc_bias, ImuNoise{});
+  pre.integrateRange(d.imu, 1.1, 1.2);
+  const ImuTransition fej = imuTransition(pre, first, x.nav, ImuNoise{});
+  const Matrix15d P1 = fej.Phi * P0 * fej.Phi.transpose() + fej.Q;
+  EXPECT_LT((x.Phi_last - fej.Phi).norm(), 1e-12 * fej.Phi.norm());
+  EXPECT_LT((x.P.topLeftCorner<kDim, kDim>() - P1).norm(), 1e-12 * P1.norm());
+  const Matrix15d Phi_updated = imuTransition(pre, updated, x.nav, ImuNoise{}).Phi;
+  EXPECT_GT((Phi_updated - fej.Phi).norm(), 1e-3 * fej.Phi.norm());  // the test can tell them apart
+}
+
+// d(clone)/d(t_d) by central differences of propagating to t_cam + t_d.
 TEST(FilterPropagation, CloneTimeOffsetColumn) {
   const SimData d = simulate(Scenario::kHandheld, false, 1);
   const double t_cam = 1.3, eps = 1e-5;

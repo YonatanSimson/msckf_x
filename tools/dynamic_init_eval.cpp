@@ -56,7 +56,6 @@
 // 100 (max(r, 1/r) - 1). okvis has no scale.
 
 #include "msckf/calib/kalibr_io.h"
-#include "msckf/camera/pinhole_radtan.h"
 #include "msckf/core/constants.h"
 #include "msckf/eval/trajectory.h"
 #include "msckf/imu/preintegration.h"
@@ -703,19 +702,10 @@ int runEuroc(const Args& a) {
 
 // ------------------------------------------------------------------ sim ----
 
-Scenario parseScenario(const std::string& s) {
-  if (s == "handheld") return Scenario::kHandheld;
-  if (s == "cart") return Scenario::kCart;
-  if (s == "fast_rotation") return Scenario::kFastRotation;
-  if (s == "car") return Scenario::kCar;
-  throw std::invalid_argument("unknown scenario " + s);
-}
-
 int runSim(const Args& a) {
   const Scenario scenario = parseScenario(a.scenario);
-  Eigen::VectorXd k(9);  // EuRoC cam0
-  k << 458.654, 457.296, 367.215, 248.375, -0.28340811, 0.07395907, 0.00019359, 1.76187114e-05, 0.0;
-  const auto camera = std::make_shared<PinholeRadtan>(752, 480, k);
+  const CameraModelPtr camera = simulatedCamera();
+  const double fx = camera->params()(0);
   FeaturelessInitConfig lin_cfg;
   lin_cfg.min_acc_excitation = a.min_excitation;
   lin_cfg.triplet_scale = a.triplets;
@@ -757,7 +747,7 @@ int runSim(const Args& a) {
       truth.v_body_last = sl.R_GI.inverse() * sl.v_GI;
       return truth;
     };
-    const double bearing_sigma = c.pixel_noise / k(0);
+    const double bearing_sigma = c.pixel_noise / fx;
     Args sim_args = a;
     sim_args.still_noise_px = c.pixel_noise;
     const double max_retry = DynamicInitConfig{}.max_window;
@@ -770,7 +760,7 @@ int runSim(const Args& a) {
         ++runs;
       }
       evaluateRetry(log, nullptr, seq, t0, t0, data.imu, all, T_IC, c.gyro_bias0, c.acc_bias0, c.imu_noise,
-                    bearing_sigma, k(0), truth_for, {}, lin_cfg, sim_args);
+                    bearing_sigma, fx, truth_for, {}, lin_cfg, sim_args);
     }
   }
   std::cout << a.scenario << ": " << runs << " windows\n";

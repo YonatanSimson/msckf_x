@@ -1,5 +1,6 @@
 #pragma once
 
+#include "msckf/camera/camera_model.h"
 #include "msckf/sim/spline.h"
 
 #include <cstdint>
@@ -15,6 +16,13 @@ enum class Scenario {
 };
 
 std::string toString(Scenario scenario);
+
+/// Scenario from its command-line name: handheld, cart, fast_rotation or car.
+/// @throws std::invalid_argument for any other name.
+Scenario parseScenario(const std::string& name);
+
+/// The camera every simulation uses: EuRoC cam0 (pinhole, radial-tangential, 752 x 480).
+CameraModelPtr simulatedCamera();
 
 struct SimConfig;
 

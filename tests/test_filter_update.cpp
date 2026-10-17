@@ -191,7 +191,8 @@ TEST(FilterUpdate, MeasurementJacobianAnnihilatesUnobservableDirections) {
     x.R_GI = c.R_GI;
     x.p_GI = c.p_GI;
     const Eigen::MatrixXd N = unobservableDirections(x, {fx.f});
-    const Eigen::Matrix<double, 2, 6> H_pose = fj.H_x.block<2, 6>(2 * static_cast<long>(j), fx.state.cloneIndex(j));
+    const int ci = fx.state.cloneIndex(fx.clone_of_obs[j]);
+    const Eigen::Matrix<double, 2, 6> H_pose = fj.H_x.block<2, 6>(2 * static_cast<long>(j), ci);
     const Eigen::Matrix<double, 2, 3> H_f = fj.H_f.middleRows<2>(2 * static_cast<long>(j));
     const Eigen::MatrixXd HN = H_pose * N.topRows<6>() + H_f * N.bottomRows<3>();
     EXPECT_LT(HN.norm(), 1e-9 * H_pose.norm()) << "observation " << j;

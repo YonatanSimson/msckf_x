@@ -16,7 +16,8 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 build="${MSCKF_BUILD:-$repo/build}"
 python="${MSCKF_PYTHON:-$HOME/.venv/msckf/bin/python}"
 gates=("$@")
-[ ${#gates[@]} -eq 0 ] && gates=(stage0_reprojection stage1a_static_init stage1_tracker stage1b_dynamic_init stage3_sim stage3_observability)
+all_gates=(stage0_reprojection stage1a_static_init stage1_tracker stage1b_dynamic_init stage3_sim stage3_observability)
+[ ${#gates[@]} -eq 0 ] && gates=("${all_gates[@]}")
 
 # The GTSAM cross-check test is built when scripts/deps/build_gtsam.sh has run.
 gtsam_dir="${GTSAM_DIR:-$repo/build-gtsam/install/lib/cmake/GTSAM}"

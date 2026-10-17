@@ -1,5 +1,6 @@
 #include "msckf/sim/scenarios.h"
 
+#include "msckf/camera/pinhole_radtan.h"
 #include "msckf/sim/simulator.h"
 
 #include <algorithm>
@@ -278,6 +279,20 @@ std::string toString(Scenario scenario) {
     case Scenario::kCar: return "car";
   }
   return "unknown";
+}
+
+Scenario parseScenario(const std::string& name) {
+  if (name == "handheld") return Scenario::kHandheld;
+  if (name == "cart") return Scenario::kCart;
+  if (name == "fast_rotation") return Scenario::kFastRotation;
+  if (name == "car") return Scenario::kCar;
+  throw std::invalid_argument("unknown scenario " + name);
+}
+
+CameraModelPtr simulatedCamera() {
+  Eigen::VectorXd k(9);
+  k << 458.654, 457.296, 367.215, 248.375, -0.28340811, 0.07395907, 0.00019359, 1.76187114e-05, 0.0;
+  return std::make_shared<PinholeRadtan>(752, 480, k);
 }
 
 SimConfig defaultSimConfig(Scenario scenario) {

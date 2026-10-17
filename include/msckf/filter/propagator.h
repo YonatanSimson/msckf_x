@@ -35,8 +35,8 @@ ImuTransition imuTransition(const ImuPreintegration& pre, const NavState& lin_k,
 // Propagates the IMU state of s to time t (IMU clock) with the samples (which
 // must cover [s.t, t]): the nominal state by RK4 over each interval between
 // samples with bias-corrected readings, P through imuTransition (the IMU
-// block, and the cross terms with the rest of the state). Sets the IMU's FEJ
-// copy to the result. Returns the bias-corrected angular velocity at t.
+// block, and the cross terms with the rest of the state), keeping Phi in
+// s.Phi_last. Sets the IMU's FEJ copy to the result. Returns the bias-corrected angular velocity at t.
 Eigen::Vector3d propagate(FilterState& s, const std::vector<ImuSample>& imu, double t, const ImuNoise& noise);
 
 }  // namespace msckf::filter

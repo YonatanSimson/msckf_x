@@ -69,6 +69,8 @@ class FilterState {
   double t = 0.0;  // IMU state time (IMU clock)
   NavState nav;
   NavState nav_fej;
+  /// IMU error transition of the last propagation, as applied to P (read by the observability check).
+  Matrix15d Phi_last = Matrix15d::Identity();
   Eigen::Vector3d gyro_bias = Eigen::Vector3d::Zero();
   Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
   Sophus::SO3d R_IC;

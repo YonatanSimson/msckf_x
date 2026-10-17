@@ -95,11 +95,9 @@ std::vector<SimEpoch> runFilterOnSimulation(const Simulator& sim, const CameraMo
     e.ext_theta_err = (s.R_IC.inverse() * sc.R_IC).log();
     e.ext_p_err = sc.p_IC - s.p_IC;
     e.td_err = sc.time_offset - s.t_d;
-    e.t_state = s.t;
     e.nav_prior = s.nav_fej;
     e.nav_post = s.nav;
-    e.gyro_bias = s.gyro_bias;
-    e.acc_bias = s.acc_bias;
+    e.Phi = s.Phi_last;
     e.observations = static_cast<int>(obs.size());
     e.update = r.update;
     e.time_ms = r.time_ms;

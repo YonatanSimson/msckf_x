@@ -69,7 +69,10 @@ Eigen::Vector3d propagate(FilterState& s, const std::vector<ImuSample>& imu, dou
     // The clone at t would be the pose at s.t: refuse instead of mislabelling it.
     throw std::invalid_argument("filter::propagate: target time precedes the state time");
   }
-  if (t == s.t) return omegaAt(s.t);
+  if (t == s.t) {
+    s.Phi_last.setIdentity();
+    return omegaAt(s.t);
+  }
 
   ImuPreintegration pre(s.gyro_bias, s.acc_bias, noise);
   pre.integrateRange(imu, s.t, t);
@@ -90,6 +93,7 @@ Eigen::Vector3d propagate(FilterState& s, const std::vector<ImuSample>& imu, dou
     s.P.topRightCorner(kDim, rest) = (tr.Phi * s.P.topRightCorner(kDim, rest)).eval();
     s.P.bottomLeftCorner(rest, kDim) = s.P.topRightCorner(kDim, rest).transpose();
   }
+  s.Phi_last = tr.Phi;
   s.nav = x;
   s.nav_fej = x;
   s.t = t;
