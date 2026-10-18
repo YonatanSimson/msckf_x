@@ -44,6 +44,7 @@ std::vector<std::string> splitCsv(const std::string& line) {
 
 std::vector<EurocState> readEurocStates(const std::string& path) {
   std::ifstream f(path);
+  if (!f) throw std::runtime_error("cannot open " + path);
   std::vector<EurocState> out;
   std::string line;
   while (std::getline(f, line)) {

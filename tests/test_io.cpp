@@ -39,9 +39,8 @@ TEST(Io, ReadTracksThrowsOnMissingFile) {
 }
 
 TEST(Io, ReadEurocStatesReadsVelocityAndBiases) {
-  const std::string path = writeFile("state.csv",
-                                     "#timestamp,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,bw_x,bw_y,bw_z,ba_x,ba_y,ba_z\n"
-                                     "1500000000,0,0,0,1,0,0,0,1,2,3,0.1,0.2,0.3,-1,-2,-3\n");
+  const std::string header = "#timestamp,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,bw_x,bw_y,bw_z,ba_x,ba_y,ba_z\n";
+  const std::string path = writeFile("state.csv", header + "1500000000,0,0,0,1,0,0,0,1,2,3,0.1,0.2,0.3,-1,-2,-3\n");
 
   const std::vector<EurocState> states = readEurocStates(path);
 
@@ -56,6 +55,10 @@ TEST(Io, ReadEurocStatesIsEmptyForPoseOnlyFiles) {
   const std::string path = writeFile("pose.csv", "#t,px,py,pz,qw,qx,qy,qz\n1000000000,0,0,0,1,0,0,0\n");
 
   EXPECT_TRUE(readEurocStates(path).empty());
+}
+
+TEST(Io, ReadEurocStatesThrowsOnMissingFile) {
+  EXPECT_THROW(readEurocStates("/nonexistent/state.csv"), std::runtime_error);
 }
 
 }  // namespace

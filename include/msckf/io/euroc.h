@@ -9,8 +9,8 @@
 
 namespace msckf::io {
 
-// EuRoC / TUM-VI IMU CSV (mav0/imu0/data.csv):
-// "t_ns, wx, wy, wz, ax, ay, az" with a '#' header. Times in seconds.
+/// EuRoC / TUM-VI IMU CSV (mav0/imu0/data.csv):
+/// "t_ns, wx, wy, wz, ax, ay, az" with a '#' header. Times in seconds.
 std::vector<ImuSample> readEurocImu(const std::string& path);
 
 /// One row of EuRoC's state ground truth (state_groundtruth_estimate0/data.csv).
@@ -23,6 +23,7 @@ struct EurocState {
 
 /// EuRoC state ground truth: columns 8-10 velocity, 11-13 b_w, 14-16 b_a.
 /// Empty for pose-only files (TUM-VI, LaMAria, KITTI conversions).
+/// @throws std::runtime_error if the file cannot be opened.
 std::vector<EurocState> readEurocStates(const std::string& path);
 
 /// The front end's tracks of one image (tracker_eval tracks.csv).

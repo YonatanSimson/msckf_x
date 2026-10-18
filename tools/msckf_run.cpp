@@ -47,6 +47,7 @@ struct Sequence {
   std::vector<ImuSample> imu;
   std::vector<io::TrackedFrame> frames;
   ImuNoise noise;
+  std::vector<io::EurocState> bias_truth;  // --bias gt: EuRoC's state ground truth, else empty
 };
 
 struct Initialization {
@@ -64,6 +65,9 @@ Sequence loadSequence(const Args& a) {
   s.imu = io::readEurocImu((fs::path(a.euroc) / "mav0" / "imu0" / "data.csv").string());
   s.frames = io::readTracks(a.tracks);
   if (s.frames.empty() || s.imu.empty()) throw std::runtime_error("no images or no IMU samples");
+  if (a.bias != "zero" && a.bias != "gt") throw std::invalid_argument("--bias " + a.bias);
+  if (a.bias == "gt") s.bias_truth = io::readEurocStates(a.gt);
+  if (a.bias == "gt" && s.bias_truth.empty()) throw std::runtime_error("--bias gt needs EuRoC's state ground truth");
   s.noise = a.imu_yaml.empty() ? ImuNoise{} : calib::loadKalibrImu(a.imu_yaml);
   s.noise.gyro_noise *= a.imu_noise_scale;
   s.noise.acc_noise *= a.imu_noise_scale;
@@ -86,11 +90,9 @@ std::vector<InitFrame> initFrames(const Sequence& s) {
 }
 
 // Ground-truth biases at t (--bias gt), else zero.
-std::pair<Eigen::Vector3d, Eigen::Vector3d> priorBiases(const Args& a, double t) {
-  if (a.bias == "zero") return {Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
-  if (a.bias != "gt") throw std::invalid_argument("--bias " + a.bias);
-  const std::vector<io::EurocState> states = io::readEurocStates(a.gt);
-  if (states.empty()) throw std::runtime_error("--bias gt needs EuRoC's state ground truth (--gt)");
+std::pair<Eigen::Vector3d, Eigen::Vector3d> priorBiases(const Sequence& s, double t) {
+  const std::vector<io::EurocState>& states = s.bias_truth;
+  if (states.empty()) return {Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
   const auto it = std::lower_bound(states.begin(), states.end(), t,
                                    [](const io::EurocState& x, double v) { return x.t < v; });
   const io::EurocState& st = it == states.end() ? states.back() : *it;
@@ -110,7 +112,7 @@ Initialization initialize(const Sequence& s, const Args& a) {
   cfg.refinement.bearing_sigma = a.pixel_sigma / pixels_per_radian;
   const double t_end = std::min(frames.back().t, s.imu.back().t) - cfg.max_window;
   for (double t0 = std::max(frames.front().t, s.imu.front().t) + 0.5; t0 < t_end; t0 += kRetryStep) {
-    const auto [bg, ba] = priorBiases(a, t0);
+    const auto [bg, ba] = priorBiases(s, t0);
     const DynamicInitResult r = initializeDynamic(s.imu, frames, t0, s.camera.T_IC, bg, ba, s.noise, cfg);
     if (r.ok) return {r.refinement.state, initKind(r)};
   }
@@ -158,7 +160,8 @@ std::pair<int, bool> runFilter(const Sequence& s, const Initialization& init, co
   for (const io::TrackedFrame& tf : s.frames) {
     const double t_img = tf.t + msckf.state().t_d;
     if (t_img <= init.state.t) continue;
-    while (imu_i < s.imu.size() && s.imu[imu_i].t <= t_img + 0.01) msckf.addImu(s.imu[imu_i++]);
+    // Up to the first sample past the image time (+10 ms), whatever the IMU rate.
+    while (imu_i < s.imu.size() && (imu_i == 0 || s.imu[imu_i - 1].t <= t_img + 0.01)) msckf.addImu(s.imu[imu_i++]);
     if (s.imu.back().t < t_img) break;
     std::vector<filter::FeatureObservation> obs;
     for (const auto& [id, uv] : tf.uv) obs.push_back({id, uv});

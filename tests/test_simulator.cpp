@@ -268,6 +268,9 @@ TEST(Scenarios, ParseScenarioAcceptsCommandLineNames) {
   EXPECT_EQ(parseScenario("fast_rotation"), Scenario::kFastRotation);
   EXPECT_EQ(parseScenario("cart"), Scenario::kCart);
   EXPECT_EQ(parseScenario("car"), Scenario::kCar);
+}
+
+TEST(Scenarios, ParseScenarioRejectsUnknownNames) {
   EXPECT_THROW(parseScenario("boat"), std::invalid_argument);
 }
 

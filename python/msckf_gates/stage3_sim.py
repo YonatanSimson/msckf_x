@@ -19,7 +19,9 @@ fast_rotation (UZH-FPV). The cart is reported only (known overconfident at
 """
 
 import argparse
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 
@@ -71,8 +73,9 @@ def evaluate(report, label, col, runs, gated):
     )
 
 
-def variant_cmd(args, sc, fej, d):
+def variant_cmd(args: argparse.Namespace, variant: tuple[str, bool], d: Path) -> list:
     """msckf_sim_eval command line for one scenario and FEJ setting."""
+    sc, fej = variant
     cmd = [tool("msckf_sim_eval"), "--scenario", sc, "--runs", args.runs, "--duration", args.duration, "--out", d]
     if not fej:
         cmd.append("--no-fej")
@@ -83,7 +86,7 @@ def variant_cmd(args, sc, fej, d):
     return cmd
 
 
-def check_calibration(report, sc, col):
+def check_calibration(report: GateReport, sc: str, col: Callable[[str], np.ndarray]) -> None:
     ext_rot, ext_pos, td = (col(c)[:, -1] for c in ("ext_rot_err_deg", "ext_pos_err_m", "td_err_ms"))
     rms = lambda x: float(np.sqrt(np.mean(x**2)))  # noqa: E731
     report.check(f"{sc}: final extrinsic rotation error RMSE", rms(ext_rot), "<", MAX_EXT_ROT_DEG, "deg")
@@ -105,10 +108,11 @@ def main():
 
     out = gate_out(args.out)
     report = GateReport("Stage 3: MSCKF on simulation")
-    variants = [(sc, fej) for sc in args.scenarios + args.reported for fej in (True, False)]
+    scenarios = list(dict.fromkeys(args.scenarios + args.reported))  # a scenario in both lists runs once
+    variants = [(sc, fej) for sc in scenarios for fej in (True, False)]
     tag = {v: f"{v[0]}_{'fej' if v[1] else 'nofej'}" for v in variants}
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        jobs = [ex.submit(run, variant_cmd(args, sc, fej, out / tag[sc, fej]), out / f"{tag[sc, fej]}.log")
+        jobs = [ex.submit(run, variant_cmd(args, (sc, fej), out / tag[sc, fej]), out / f"{tag[sc, fej]}.log")
                 for sc, fej in variants]  # fmt: skip
         for j in jobs:
             j.result()
