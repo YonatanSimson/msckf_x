@@ -1,23 +1,27 @@
 """Stage 3 gate, real data: the MSCKF on recorded sequences (plan, Stage 3
 metrics: accuracy, robustness, runtime).
 
-Runs tools/msckf_run on EuRoC MH_01-05, TUM-VI room1 and LaMAria R_01-03 (if
-converted) with the Stage 1b front-end tracks (msckf_gates.sequences, cached
-by the Stage 1b gate), the Stage 1b initialization and the same noise
-inflation (IMU x4, 2 px), with FEJ (the filter's default) and without, then
-scores each trajectory with tools/msckf_eval (ATE after a position + yaw
-alignment, relative error).
+Runs tools/msckf_run on every sequence on disk (msckf_gates.sequences: EuRoC
+MH_01-05 and V1/V2_01-03, TUM-VI rooms, corridors and slides, the UZH-FPV Snapdragon sequences
+with ground truth, LaMAria R_01-03 on the undistorted pinhole export and on
+the raw fisheye) with the Stage 1b front-end tracks (cached by the Stage 1b
+gate), the Stage 1b initialization and the same noise inflation (IMU x4,
+2 px), without FEJ (the user's setting for the first test sweep, plan
+Handover) and with it, then scores each trajectory with tools/msckf_eval
+(ATE after a position + yaw alignment, relative error).
 
-Gated, with FEJ (plan, "Robustness: 0 divergences on all test sequences"):
+Gated, without FEJ (plan, "Robustness: 0 divergences on all test sequences"):
 every sequence initializes, runs to the end and never diverges: no
 non-finite or runaway state (msckf_run), a trajectory msckf_eval can score,
 and ATE RMSE at most 10 % of the distance travelled (a filter that has lost
 track can stay finite: EuRoC MH_03 at 30 clones reached 586 m ATE over 131 m).
-The same is reported without FEJ. Recorded for benchmark_compare, not gated
-until the OpenVINS mono baseline exists (plan: "ATE within 20 % of OpenVINS
-mono, run as a binary"): ATE RMSE, rotation ATE RMSE, mean relative
-translation error, and the back end's time per image (measured with
---workers runs in parallel: compare across runs with the same setting only).
+The same is reported with FEJ. Recorded for benchmark_compare, not gated
+until the OpenVINS mono baseline runs here (plan: "ATE within 20 % of
+OpenVINS mono, run as a binary"): ATE RMSE, rotation ATE RMSE, mean relative
+translation error, the back end's time per image (measured with --workers
+runs in parallel: compare across runs with the same setting only), and on
+EuRoC the ratio of our ATE to the published OpenVINS and sqrtVINS mono ATE
+(msckf_gates.baselines), per sequence and as a geometric mean.
 """
 
 import argparse
@@ -26,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-from msckf_gates import sequences
+from msckf_gates import baselines, sequences
 from msckf_gates.common import GateReport, data_dir, fnum, gate_out, large_data_dir, read_csv, run, tool
 from msckf_gates.sequences import Sequence
 
@@ -34,13 +38,33 @@ MAX_ATE_FRACTION = 0.10  # of the distance travelled, else the run counts as div
 Variant = tuple[Sequence, bool]  # sequence, FEJ
 
 
+def present(dirs: list[Path], report: GateReport, what: str) -> list[Path]:
+    """The converted sequence directories (gt_imu.csv exists); the missing ones are noted."""
+    missing = [d.parent.name if d.name == "fisheye" else d.name for d in dirs if not (d / "gt_imu.csv").exists()]
+    if missing:
+        report.note(f"{what} not run, missing {', '.join(missing)}")
+    return [d for d in dirs if (d / "gt_imu.csv").exists()]
+
+
+def on_disk(seqs: list[Sequence], report: GateReport, what: str) -> list[Sequence]:
+    """The sequences whose ground truth exists; the missing ones are noted."""
+    missing = [s.name for s in seqs if not s.gt.exists()]
+    if missing:
+        report.note(f"{what} not run, missing {', '.join(missing)}")
+    return [s for s in seqs if s.gt.exists()]
+
+
 def real_sequences(args: argparse.Namespace, report: GateReport) -> list[Sequence]:
     lamaria = [args.lamaria / s for s in sequences.LAMARIA]
-    missing = [d.name for d in lamaria if not (d / "gt_imu.csv").exists()]
-    if missing:
-        report.note(f"LaMAria not run, missing {', '.join(missing)}")
-        lamaria = []
-    return [*sequences.euroc(args.euroc), sequences.tumvi_room1(args.tumvi), *sequences.converted("lamaria", lamaria)]
+    uzh = present([args.uzh_fpv / f"{n}_snapdragon_with_gt" for n in sequences.UZH_FPV], report, "UZH-FPV")
+    fisheye = present([d / "fisheye" for d in lamaria], report, "LaMAria fisheye")
+    return [
+        *sequences.euroc(args.euroc),
+        *on_disk(sequences.tumvi(args.tumvi), report, "TUM-VI"),
+        *sequences.converted("uzh", uzh),
+        *sequences.converted("lamaria", present(lamaria, report, "LaMAria")),
+        *sequences.lamaria_fisheye([d.parent for d in fisheye]),
+    ]
 
 
 def label(v: Variant) -> str:
@@ -71,8 +95,29 @@ def run_and_score(v: Variant, args: argparse.Namespace, out: Path) -> str:
     return ""
 
 
-def evaluate(report: GateReport, v: Variant, out: Path) -> bool:
-    """Records the run's scores; returns whether it diverged."""
+def record_baseline_ratios(report: GateReport, v: Variant, ate: float) -> dict[str, float]:
+    """Our ATE over each baseline's: the published mono ATE of the sequence
+    (msckf_gates.baselines) and the ATE measured by the stage3_baselines
+    benchmark, when present. {} when neither is known."""
+    ratios: dict[str, float] = {}
+    quoted = []
+    for system, p in baselines.published(v[0].name).items():
+        ratios[system] = ate / p.ate_m
+        report.record(f"{label(v)}: ATE RMSE / {system} mono ATE (published)", ratios[system], "lower")
+        quoted.append(f"{system} {p.ate_m:.2f} m published ({ratios[system]:.1f}x)")
+    for system in baselines.SYSTEMS:
+        measured = baselines.measured(system, v[0].name)
+        if measured is not None:
+            ratios[f"{system} measured"] = ate / measured
+            report.record(f"{label(v)}: ATE RMSE / {system} mono ATE (measured)", ate / measured, "lower")
+            quoted.append(f"{system} {measured:.3f} m measured ({ate / measured:.1f}x)")
+    if quoted:
+        report.note(f"{label(v)}: ATE vs mono baselines " + ", ".join(quoted))
+    return ratios
+
+
+def evaluate(report: GateReport, v: Variant, out: Path) -> tuple[bool, dict[str, float]]:
+    """Records the run's scores; returns whether it diverged and its published-baseline ratios."""
     d = out_dir(out, v)
     status = read_csv(d / "run.csv")[0]
     m = read_csv(d / "eval" / "metrics.csv")[0]
@@ -85,21 +130,37 @@ def evaluate(report: GateReport, v: Variant, out: Path) -> bool:
     report.note(f"{label(v)}: ATE {ate:.3f} m over {fnum(m['length_m']):.0f} m, rotation {rot:.2f} deg, "
                 f"RE {re:.2f} %, {ms:.1f} ms per image; init {status['init']}, {status['images']} images")  # fmt: skip
     lost = not ate <= MAX_ATE_FRACTION * fnum(m["length_m"])
-    return status["diverged"] == "1" or bool(m["error"]) or lost
+    diverged = status["diverged"] == "1" or bool(m["error"]) or lost
+    return diverged, record_baseline_ratios(report, v, ate)
 
 
-def failed(report: GateReport, v: Variant, out: Path, error: str) -> bool:
-    """Whether the run failed or diverged (noted)."""
+def score(report: GateReport, v: Variant, out: Path, error: str) -> tuple[bool, dict[str, float]]:
+    """Whether the run failed or diverged (noted), and its published-baseline ratios."""
     if error:
         report.note(f"{label(v)}: FAILED ({error})")
-        return True
+        return True, {}
     return evaluate(report, v, out)
+
+
+def record_geometric_means(report: GateReport, ratios: list[dict[str, float]], fej: bool) -> None:
+    """Geometric mean of our ATE / baseline ATE per system: over the EuRoC
+    sequences for the published ATEs, over every sequence both ran for the
+    measured ones."""
+    mode = "FEJ" if fej else "no FEJ"
+    for system in baselines.SYSTEMS:
+        for kind, key, scope in (("published", system, "EuRoC"), ("measured", f"{system} measured", "all sequences")):
+            values = [r[key] for r in ratios if key in r]
+            if values:
+                gm = float(np.exp(np.mean(np.log(values))))
+                report.record(f"{scope}, {mode}: ATE RMSE / {system} mono ATE ({kind}), geometric mean", gm, "lower")
+                report.note(f"{scope}, {mode}: {len(values)} sequences, ATE {gm:.2f}x {system} mono ({kind})")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--euroc", type=Path, default=large_data_dir() / "euroc")
     ap.add_argument("--tumvi", type=Path, default=data_dir() / "tumvi")
+    ap.add_argument("--uzh-fpv", type=Path, default=large_data_dir() / "uzh_fpv")
     ap.add_argument("--lamaria", type=Path, default=large_data_dir() / "lamaria" / "training")
     ap.add_argument("--clones", type=int, help="overrides the filter's window size max_clones (diagnosis)")
     ap.add_argument("--workers", type=int, default=6)
@@ -109,14 +170,17 @@ def main() -> int:
     out = gate_out(args.out)
     report = GateReport("Stage 3: MSCKF on real data")
     seqs = real_sequences(args, report)
-    variants: list[Variant] = [(s, fej) for fej in (True, False) for s in seqs]
+    variants: list[Variant] = [(s, fej) for fej in (False, True) for s in seqs]
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         for f in sequences.submit_tracking(ex, seqs):
             f.result()
         errors = list(ex.map(lambda v: run_and_score(v, args, out), variants))
-    bad = [v for v, e in zip(variants, errors) if failed(report, v, out, e)]
-    fej_bad = [v for v in bad if v[1]]
-    report.check("sequences failed or diverged with FEJ (or ATE > 10 % of distance)", len(fej_bad), "<=", 0)
+    results = [(v, *score(report, v, out, e)) for v, e in zip(variants, errors)]
+    bad = [v for v, diverged, _ in results if diverged]
+    for fej in (False, True):
+        record_geometric_means(report, [r for v, _, r in results if v[1] == fej], fej)
+    nofej_bad = [v for v in bad if not v[1]]
+    report.check("sequences failed or diverged without FEJ (or ATE > 10 % of distance)", len(nofej_bad), "<=", 0)
     if bad:
         report.note(f"failed or diverged: {', '.join(label(v) for v in bad)}")
     return report.finish(out)

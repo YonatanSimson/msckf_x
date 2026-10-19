@@ -19,6 +19,7 @@ struct KalibrCamera {
   CameraModelPtr model;
   Sophus::SE3d T_IC;       // camera pose in the IMU frame (inverse of Kalibr's T_cam_imu)
   bool has_T_IC = false;   // camchain.yaml has no T_cam_imu
+  double timeshift_cam_imu = 0.0;  // Kalibr's t_imu = t_cam + timeshift (s); 0 when absent
 };
 
 // Builds our camera model from Kalibr's description:
@@ -27,6 +28,7 @@ struct KalibrCamera {
 //   ds-none         [xi alpha fu fv pu pv]       -> DoubleSphere
 //   eucm-none       [alpha beta fu fv pu pv]     -> Eucm
 //   omni-radtan     [xi fu fv pu pv] [k1 k2 r1 r2] -> OmniRadtan
+//   fisheye624-radtan-thinprism [fu fv pu pv] [k0..k5 p0 p1 s0..s3] -> Fisheye624 (Aria)
 // Throws std::invalid_argument for anything else.
 CameraModelPtr makeKalibrCamera(const std::string& camera_model, const std::string& distortion_model,
                                 const std::vector<double>& intrinsics,

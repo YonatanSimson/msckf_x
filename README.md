@@ -2,7 +2,9 @@
 
 A monocular camera + IMU **Multi-State Constraint Kalman Filter** in C++17, written from the papers in gated stages. The target is slow, planar, often-stopping ground vehicles (a survey cart) as well as handheld and drone motion, with fisheye and >180° lenses supported from the start.
 
-**Clean-room:** the math comes from the papers (MSCKF, MSCKF 2.0, the OpenVINS docs, sqrtVINS, Solà). GPL implementations (OpenVINS, VINS-Mono, ORB-SLAM3) are never opened. Everything linked into the filter is permissively licensed (Eigen, Sophus, OpenCV, basalt-headers, yaml-cpp, apriltag). The full design, decisions and running log are in [`mono-msckf-plan.md`](mono-msckf-plan.md).
+**License:** GPL-3.0 (`LICENSE`); third-party components and their licenses are listed in `THIRD_PARTY.md`.
+
+**Clean-room:** the math comes from the papers (MSCKF, MSCKF 2.0, the OpenVINS docs, sqrtVINS, Solà). GPL implementations (OpenVINS, VINS-Mono, ORB-SLAM3) are never opened. Everything linked into the filter is permissively licensed (Eigen, Sophus, OpenCV, basalt-headers, yaml-cpp, apriltag). The full design, decisions and running log are in [`mono-msckf-plan.md`](docs/mono-msckf-plan.md).
 
 ## Status
 
@@ -61,7 +63,9 @@ scripts/run_gates.sh               # build, unit tests, then every stage gate �
 scripts/run_benchmarks.sh          # dated run with manifest, compared against the previous run for regressions
 ```
 
-Datasets used: EuRoC, TUM-VI (fisheye at about 195°), TartanAir, KITTI raw (diagnosis only), plus the built-in simulator for NEES, observability and calibration convergence.
+Datasets used: EuRoC (all 11 sequences), TUM-VI (fisheye at about 195°), UZH-FPV (Snapdragon, `python/uzh_fpv_to_euroc.py`), LaMAria (Project Aria: the undistorted pinhole export, `python/lamaria_to_euroc.py`, and the raw Fisheye624 SLAM cameras, `python/lamaria_fisheye_to_euroc.py`), TartanAir, KITTI raw (diagnosis only), plus the built-in simulator for NEES, observability and calibration convergence.
+
+Baselines: OpenVINS and sqrtVINS run as unmodified binaries (`scripts/baselines/run_baseline.sh`, bags from `python/euroc_to_rosbag.py`, benchmark `stage3_baselines`) from clones under `~/work/non_commercial/`, a directory nothing in this repository reads code from; the published EuRoC numbers are in `python/msckf_gates/baselines.py`.
 
 ## References
 
@@ -72,4 +76,4 @@ Datasets used: EuRoC, TUM-VI (fisheye at about 195°), TartanAir, KITTI raw (dia
 - Usenko et al., 3DV 2018 (Double Sphere)
 - Solà, *Quaternion kinematics for the error-state Kalman filter*, 2017
 
-The full list is in the appendix of [`mono-msckf-plan.md`](mono-msckf-plan.md).
+The full list is in the appendix of [`mono-msckf-plan.md`](docs/mono-msckf-plan.md).

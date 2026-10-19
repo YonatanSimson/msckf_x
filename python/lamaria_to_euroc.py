@@ -29,30 +29,13 @@ SEQ_DIR defaults to every <MSCKF_DATA_LARGE>/lamaria/training/*.
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 import numpy as np
 import yaml
 
-from msckf_gates.common import large_data_dir, quat_to_R, quat_wxyz
-
-
-def rotation(q_xyzw):
-    x, y, z, w = q_xyzw
-    return quat_to_R((w, x, y, z))
-
-
-def rigid(q_xyzw, tvec):
-    T = np.eye(4)
-    T[:3, :3] = rotation(q_xyzw)
-    T[:3, 3] = tvec
-    return T
-
-
-def link(target, name):
-    if not name.is_symlink():
-        os.symlink(os.path.relpath(target, name.parent), name)
+from euroc_layout import gravity_check_line, link, rigid, write_ground_truth
+from msckf_gates.common import large_data_dir, quat_wxyz
 
 
 def write_camera(seq_dir, cam, calib):
@@ -116,24 +99,6 @@ def imu_poses(pgt, T_rig_imu):
     return out
 
 
-def write_ground_truth(gt, out):
-    with open(out, "w") as f:
-        f.write("# timestamp[ns],tx,ty,tz,qw,qx,qy,qz\n")
-        for r in gt:
-            f.write(f"{int(r[0])}," + ",".join(f"{x:.9f}" for x in r[1:]) + "\n")
-
-
-def mean_world_specific_force(imu, gt):
-    """Mean over the ground-truth poses of R_wi times the mean accelerometer
-    reading until the next pose."""
-    k = np.searchsorted(gt[:, 0], imu[:, 0], side="right") - 1
-    inside = (k >= 0) & (k < len(gt) - 1)
-    k, acc = k[inside], imu[inside, 4:7]
-    counts = np.bincount(k, minlength=len(gt))
-    sums = np.stack([np.bincount(k, acc[:, i], minlength=len(gt)) for i in range(3)], axis=1)
-    return np.mean([quat_to_R(gt[j, 4:8]) @ (sums[j] / counts[j]) for j in np.flatnonzero(counts)], axis=0)
-
-
 def pgt_rig_from_imu(seq_dir, calib):
     """T_rig_imu of the sequence's pGT. MPS pGT (no control points) is
     world_from_imu; the control-point pipeline's pGT is world_from_cam0."""
@@ -157,10 +122,7 @@ def convert(seq_dir):
     gt = imu_poses(drop_frozen_poses(pgt), pgt_rig_from_imu(seq_dir, calib))
     write_ground_truth(gt, seq_dir / "gt_imu.csv")
     imu = np.loadtxt(seq_dir / "aria" / "imu0" / "data.csv", delimiter=",", dtype=np.float64)
-    f = mean_world_specific_force(imu, gt)
-    gap = np.diff(gt[:, 0]).max() * 1e-9
-    print(f"{name}: {len(gt)} poses over {(gt[-1, 0] - gt[0, 0]) * 1e-9:.0f} s (max gap {gap:.2f} s), "
-          f"mean world specific force ({f[0]:.2f}, {f[1]:.2f}, {f[2]:.2f}) m/s^2")  # fmt: skip
+    print(gravity_check_line(name, imu, gt))
 
 
 def main():

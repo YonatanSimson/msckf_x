@@ -13,10 +13,12 @@
 #                           against the previous run (python/benchmark_compare.py)
 #
 # BENCHMARK: unit_tests stage0_reprojection stage1a_static_init stage1_tracker
-# stage1b_dynamic_init stage3_sim stage3_observability stage3_real
-# basalt_flow_check tracker_compare (default: all, in this order;
-# stage1_tracker reads stage1a_static_init's output and stage3_real
-# stage1b_dynamic_init's tracks from the same run). ROOT defaults to
+# stage1b_dynamic_init stage3_sim stage3_observability stage3_baselines
+# stage3_real basalt_flow_check tracker_compare (default: all, in this order;
+# stage1_tracker reads stage1a_static_init's output, stage3_real reads
+# stage1b_dynamic_init's tracks and stage3_baselines' measured ATEs from the
+# same run; stage3_baselines runs OpenVINS and sqrtVINS as binaries, about
+# real time per sequence). ROOT defaults to
 # $MSCKF_BENCHMARK_ROOT or ~/benchmark; AprilGrid detections for
 # tracker_compare are cached in ROOT/cache/corners. Data comes from
 # scripts/data/fetch_*.sh. Exits non-zero if a benchmark fails or a score
@@ -39,7 +41,7 @@ done
 shift $((OPTIND - 1))
 benchmarks=("$@")
 all_benchmarks=(unit_tests stage0_reprojection stage1a_static_init stage1_tracker stage1b_dynamic_init stage3_sim
-  stage3_observability stage3_real basalt_flow_check tracker_compare)
+  stage3_observability stage3_baselines stage3_real basalt_flow_check tracker_compare)
 [ ${#benchmarks[@]} -eq 0 ] && benchmarks=("${all_benchmarks[@]}")
 
 run="$root/$(date +%Y-%m-%d_%H%M%S)"

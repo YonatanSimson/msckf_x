@@ -3,6 +3,7 @@
 #include "msckf/camera/double_sphere.h"
 #include "msckf/camera/eucm.h"
 #include "msckf/camera/kannala_brandt.h"
+#include "msckf/camera/fisheye624.h"
 #include "msckf/camera/omni_radtan.h"
 #include "msckf/camera/pinhole_radtan.h"
 
@@ -63,6 +64,14 @@ CameraModelPtr makeKalibrCamera(const std::string& camera_model, const std::stri
     p << in[1], in[2], in[3], in[4], in[0], d[0], d[1], d[2], d[3];
     return std::make_shared<OmniRadtan>(width, height, p);
   }
+  if (name == "fisheye624-radtan-thinprism") {
+    requireSize(in, 4, name + " intrinsics");
+    requireSize(d, 12, name + " distortion");
+    Eigen::VectorXd p(Fisheye624::kNumParams);
+    p.head<4>() = Eigen::Map<const Eigen::Vector4d>(in.data());
+    p.tail<12>() = Eigen::Map<const Eigen::Matrix<double, 12, 1>>(d.data());
+    return std::make_shared<Fisheye624>(width, height, p);
+  }
   throw std::invalid_argument("unsupported Kalibr camera model " + name);
 }
 
@@ -86,6 +95,7 @@ std::vector<KalibrCamera> loadKalibrCamchain(const std::string& path) {
                                  n["intrinsics"].as<std::vector<double>>(), distortion, res.at(0),
                                  res.at(1));
     cam.model_name = camera_model + "-" + (distortion_model == "equidistant" ? "equi" : distortion_model);
+    if (n["timeshift_cam_imu"]) cam.timeshift_cam_imu = n["timeshift_cam_imu"].as<double>();
     if (n["T_cam_imu"]) {
       Eigen::Matrix4d T;
       for (int r = 0; r < 4; ++r) {
@@ -114,6 +124,7 @@ KalibrCamera loadEurocCamera(const std::string& sensor_yaml) {
                                n["distortion_coefficients"].as<std::vector<double>>(), res.at(0),
                                res.at(1));
   cam.model_name = n["camera_model"].as<std::string>() + "-" + distortion;
+  if (n["timeshift_cam_imu"]) cam.timeshift_cam_imu = n["timeshift_cam_imu"].as<double>();
   const auto data = n["T_BS"]["data"].as<std::vector<double>>();
   Eigen::Matrix4d T;
   for (int i = 0; i < 16; ++i) T(i / 4, i % 4) = data.at(i);

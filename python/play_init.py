@@ -36,7 +36,7 @@ import numpy as np
 import yaml
 
 from msckf_gates.common import FRONT_END_TUMVI, REPO, data_dir, euroc_images, fnum, read_csv, run, tool
-from msckf_gates.stage1b_dynamic_init import REAL_NOISE
+from msckf_gates.sequences import REAL_NOISE
 from play_euroc import to_u8
 from viz import FrameSink
 

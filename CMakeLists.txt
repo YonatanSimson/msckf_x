@@ -21,6 +21,7 @@ add_library(msckf
   src/camera/double_sphere.cpp
   src/camera/eucm.cpp
   src/camera/omni_radtan.cpp
+  src/camera/fisheye624.cpp
   src/eval/alignment.cpp
   src/eval/metrics.cpp
   src/eval/nees.cpp

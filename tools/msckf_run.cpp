@@ -10,7 +10,8 @@
 //
 // Biases: zero, or with --bias gt EuRoC's ground-truth biases at the start
 // (the initializer's "prior calibration"; the filter estimates them after).
-// The extrinsic and time offset start at the calibration and are estimated.
+// The extrinsic and time offset start at the calibration (Kalibr's timeshift_cam_imu,
+// when the camchain or sensor.yaml has it) and are estimated.
 //
 // Output in --out:
 //   est.txt     IMU pose per image (TUM format, IMU clock), for msckf_eval
@@ -58,21 +59,34 @@ struct Initialization {
 constexpr double kRetryStep = 0.5;   // s between initialization attempts
 constexpr double kMaxPosition = 1e4;  // m; beyond this the filter has diverged
 
+ImuNoise loadImuNoise(const Args& a) {
+  if (a.imu_yaml.empty()) {
+    std::cerr << "\n****************************************************************\n"
+              << "WARNING: no --imu-yaml given: using the built-in EuRoC IMU noise\n"
+              << "         densities. Wrong for any other IMU; pass its Kalibr yaml.\n"
+              << "****************************************************************\n\n";
+  }
+  ImuNoise noise = a.imu_yaml.empty() ? ImuNoise{} : calib::loadKalibrImu(a.imu_yaml);
+  noise.gyro_noise *= a.imu_noise_scale;
+  noise.acc_noise *= a.imu_noise_scale;
+  noise.gyro_bias_walk *= a.imu_noise_scale;
+  noise.acc_bias_walk *= a.imu_noise_scale;
+  return noise;
+}
+
 Sequence loadSequence(const Args& a) {
   Sequence s;
   s.camera = calib::loadSequenceCamera(a.euroc, a.cam, a.camchain);
   if (!s.camera.has_T_IC) throw std::runtime_error("camera has no extrinsic (T_cam_imu / T_BS)");
   s.imu = io::readEurocImu((fs::path(a.euroc) / "mav0" / "imu0" / "data.csv").string());
   s.frames = io::readTracks(a.tracks);
+  // Camera times onto the IMU clock with the calibrated shift; t_d then estimates the remainder.
+  for (io::TrackedFrame& f : s.frames) f.t += s.camera.timeshift_cam_imu;
   if (s.frames.empty() || s.imu.empty()) throw std::runtime_error("no images or no IMU samples");
   if (a.bias != "zero" && a.bias != "gt") throw std::invalid_argument("--bias " + a.bias);
   if (a.bias == "gt") s.bias_truth = io::readEurocStates(a.gt);
   if (a.bias == "gt" && s.bias_truth.empty()) throw std::runtime_error("--bias gt needs EuRoC's state ground truth");
-  s.noise = a.imu_yaml.empty() ? ImuNoise{} : calib::loadKalibrImu(a.imu_yaml);
-  s.noise.gyro_noise *= a.imu_noise_scale;
-  s.noise.acc_noise *= a.imu_noise_scale;
-  s.noise.gyro_bias_walk *= a.imu_noise_scale;
-  s.noise.acc_bias_walk *= a.imu_noise_scale;
+  s.noise = loadImuNoise(a);
   return s;
 }
 

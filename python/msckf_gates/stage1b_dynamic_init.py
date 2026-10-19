@@ -147,7 +147,7 @@ def main():
     de = tool("dynamic_init_eval")
 
     # Front-end tracks, then the initializer runs.
-    real = [*sequences.euroc(args.euroc), sequences.tumvi_room1(args.tumvi)]
+    real = [*sequences.euroc(args.euroc, sequences.EUROC_MH), sequences.tumvi_room1(args.tumvi)]
     # KITTI raw drives (converted by python/kitti_raw_to_euroc.py): reported,
     # not gated; short drives, so a start every 5 s. The converter writes the
     # OXTS noise measured against ground truth (python/kitti_imu_consistency.py):
@@ -177,7 +177,7 @@ def main():
             f.result()
 
     datasets = {f"sim {s}": read_csv(out / f"sim_{s}" / "runs.csv") for s in SCENARIOS}
-    datasets["EuRoC MH_01-05"] = [r for s in sequences.EUROC for r in read_csv(out / f"euroc_{s}" / "runs.csv")]
+    datasets["EuRoC MH_01-05"] = [r for s in sequences.EUROC_MH for r in read_csv(out / f"euroc_{s}" / "runs.csv")]
     datasets["TUM-VI room1"] = read_csv(out / "tumvi_room1" / "runs.csv")
     if kitti:
         datasets[f"KITTI raw ({len(kitti)} drives)"] = [

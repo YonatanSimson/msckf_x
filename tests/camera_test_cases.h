@@ -3,6 +3,7 @@
 
 #include "msckf/camera/double_sphere.h"
 #include "msckf/camera/eucm.h"
+#include "msckf/camera/fisheye624.h"
 #include "msckf/camera/kannala_brandt.h"
 #include "msckf/camera/omni_radtan.h"
 #include "msckf/camera/pinhole_radtan.h"
@@ -30,6 +31,7 @@ inline Eigen::VectorXd vec(std::initializer_list<double> v) {
 // EuRoC cam0 and TUM-VI cam0 calibrations as published (values quoted from
 // memory; the gates here only need realistic parameters). The EUCM and the
 // alpha < 0.5 cases are synthetic, to exercise the other validity branch.
+// AriaFisheye624 is LaMAria R_01_easy cam0's Aria calibration (SLAM left camera).
 // TumviOmniRadtan is TUM-VI cam0's published omni-radtan calibration (xi > 1);
 // OmniRadtanXiBelowOne is synthetic, for the xi <= 1 branch. The two
 // undistorted omni cases are the ones Basalt's UCM can cross-check.
@@ -79,6 +81,17 @@ inline std::vector<CameraCase> cameraCases() {
        true},
       {"EucmAlphaBelowHalf",
        [] { return std::make_shared<Eucm>(640, 480, vec({300.0, 300.0, 320.0, 240.0, 0.4, 1.2})); },
+       false},
+      {"AriaFisheye624",
+       [] {
+         return std::make_shared<Fisheye624>(
+             640, 480,
+             vec({241.6048925567284, 241.6048925567284, 322.895555771704, 240.4445599560633,
+                  -0.02484243376501498, 0.09628938752134535, -0.063325466945624,
+                  0.006200726341569274, 0.003488761399963396, -0.0007297520056856479,
+                  0.00089532032215904, 0.000361066580790014, -0.00136879244387001,
+                  -0.0001054083415853531, -0.0004635611298488213, -0.0001049856461262643}));
+       },
        false},
       {"TumviOmniRadtan",
        [] {

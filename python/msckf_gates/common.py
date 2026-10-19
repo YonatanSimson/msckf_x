@@ -1,5 +1,6 @@
 """Shared helpers for the gate checkers: paths, running the C++ tools, and a
 pass/fail table that is printed and written to <out>/report.md."""
+
 import csv
 import json
 import math
@@ -36,8 +37,23 @@ def large_data_dir():
 # forward-backward; detection grid 40 px for TUM-VI 512, 50 px otherwise),
 # plus the camera model's valid-region mask so every feature has a bearing.
 def basalt_flow_args(grid_px):
-    return ["--tracker", "basalt", "--basalt-type", "frame_to_frame", "--grid", str(grid_px), "--fb-dist2", "0.04",
-            "--pattern", "51", "--iterations", "5", "--levels", "3", "--mask-valid"]
+    return [
+        "--tracker",
+        "basalt",
+        "--basalt-type",
+        "frame_to_frame",
+        "--grid",
+        str(grid_px),
+        "--fb-dist2",
+        "0.04",
+        "--pattern",
+        "51",
+        "--iterations",
+        "5",
+        "--levels",
+        "3",
+        "--mask-valid",
+    ]
 
 
 FRONT_END_TUMVI = basalt_flow_args(40)
@@ -72,11 +88,12 @@ def tool(name):
     return str(path)
 
 
-def run(cmd, log=None):
-    """Runs a command, echoing it; returns stdout. Raises on failure."""
+def run(cmd, log=None, env=None):
+    """Runs a command, echoing it; returns stdout. Raises on failure. env adds
+    to or overrides the inherited environment."""
     cmd = [str(c) for c in cmd]
     print("$", shlex.join(cmd), flush=True)
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **env} if env else None)
     if log is not None:
         Path(log).write_text(f"$ {shlex.join(cmd)}\n{res.stdout}{res.stderr}")
     if res.returncode != 0:
@@ -133,11 +150,19 @@ class GateReport:
         return bool(self.checks) and all(c.passed for c in self.checks)
 
     def markdown(self):
-        lines = [f"# {self.title}", "", f"**{'PASS' if self.passed else 'FAIL'}**", "",
-                 "| Check | Value | Threshold | Result |", "| --- | --- | --- | --- |"]
+        lines = [
+            f"# {self.title}",
+            "",
+            f"**{'PASS' if self.passed else 'FAIL'}**",
+            "",
+            "| Check | Value | Threshold | Result |",
+            "| --- | --- | --- | --- |",
+        ]
         for c in self.checks:
-            lines.append(f"| {c.name} | {c.value:.4g} {c.unit} | {c.op} {c.threshold:.4g} {c.unit} "
-                         f"| {'pass' if c.passed else 'FAIL'} |")
+            lines.append(
+                f"| {c.name} | {c.value:.4g} {c.unit} | {c.op} {c.threshold:.4g} {c.unit} "
+                f"| {'pass' if c.passed else 'FAIL'} |"
+            )
         if self.notes:
             lines += ["", "Not gated:", ""] + [f"- {n}" for n in self.notes]
         return "\n".join(lines) + "\n"
@@ -146,9 +171,18 @@ class GateReport:
         """Machine-readable checks for python/benchmark_compare.py: each value,
         its threshold, and which direction is better (from the check's op);
         then the recorded metrics."""
-        return [{"name": c.name, "value": c.value, "unit": c.unit, "op": c.op, "threshold": c.threshold,
-                 "better": "lower" if c.op in ("<=", "<") else "higher", "passed": c.passed}
-                for c in self.checks] + self.records
+        return [
+            {
+                "name": c.name,
+                "value": c.value,
+                "unit": c.unit,
+                "op": c.op,
+                "threshold": c.threshold,
+                "better": "lower" if c.op in ("<=", "<") else "higher",
+                "passed": c.passed,
+            }
+            for c in self.checks
+        ] + self.records
 
     def finish(self, out_dir):
         md = self.markdown()

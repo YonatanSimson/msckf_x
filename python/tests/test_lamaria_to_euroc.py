@@ -7,7 +7,8 @@ import unittest
 
 import numpy as np
 
-from lamaria_to_euroc import drop_frozen_poses, imu_poses, mean_world_specific_force, rigid
+from euroc_layout import mean_world_specific_force, rigid
+from lamaria_to_euroc import drop_frozen_poses, imu_poses
 from msckf_gates.common import quat_to_R, quat_wxyz
 
 GRAVITY = np.array([0.0, 0.0, 9.81])

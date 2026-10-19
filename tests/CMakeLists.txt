@@ -27,6 +27,10 @@ target_link_libraries(test_basalt_flow PRIVATE msckf_vision)
 msckf_add_test(test_camera_basalt_crosscheck)
 target_link_libraries(test_camera_basalt_crosscheck PRIVATE basalt_headers)
 
+# Fixture from python/aria_fisheye_fixture.py (projectaria_tools, Apache 2.0).
+msckf_add_test(test_camera_aria_crosscheck)
+target_compile_definitions(test_camera_aria_crosscheck PRIVATE MSCKF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+
 # GTSAM (BSD), test-only: cross-check of the IMU preintegration. Built by
 # scripts/deps/build_gtsam.sh; configure with -DGTSAM_DIR=<prefix>/lib/cmake/GTSAM.
 find_package(GTSAM CONFIG QUIET)

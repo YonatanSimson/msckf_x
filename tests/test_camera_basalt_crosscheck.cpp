@@ -110,6 +110,7 @@ std::optional<BasaltReference> makeReference(const CameraModel& cam) {
     if (!k.tail<4>().isZero()) return std::nullopt;  // Basalt has no distorted UCM
     return wrapUnified(k);
   }
+  if (cam.name() == "fisheye624") return std::nullopt;  // cross-checked against projectaria_tools instead
   throw std::invalid_argument("no Basalt reference for " + cam.name());
 }
 
