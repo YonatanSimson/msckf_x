@@ -20,19 +20,29 @@ Updated as work progresses. Decisions that changed a section below are recorded 
 | 2026-10-11 | 3 | MSCKF core (`src/filter/`): state, propagation with FEJ, cloning with t_d, feature update (nullspace, chi-square, QR, Joseph), sliding window; shared `geometry/triangulation`; `msckf_sim_eval`, `stage3_sim` gate. Handheld consistent; cart overconfident (see Stage 3 "Progress") | 77ba820 |
 | 2026-10-12 | 3 | Review fixes: `stage3_sim` consistency on the share of epochs in the band (≥ 90 %), propagation refuses targets before the state time, nullspace projection in place, shared `maxRayAngleDeg` | 54698d0 |
 | 2026-10-12 | 1b | Init review fixes: featureless init refuses < 6 equations, IMU must cover the window, linear hand-off covariance rederived, refinement covariance inverted once | 6d006eb |
+| 2026-10-12 | — | Plan: Stage 3 status, benchmark after the review fixes | 8debcea |
+| 2026-10-17 | 3 | Anchored inverse depth triangulation; equation audit vs the plan artifact (Stage 3 "Equation audit") | f94d01c |
+| 2026-10-17 | 1b | LaMAria R_01–R_03 in the Stage 1b benchmark; triangulation review fixes | d79bf21 |
+| 2026-10-17 | 3 | Features linearized in anchored inverse depth, points at infinity kept | 0ad58af |
+| 2026-10-17 | 1b, 3 | Review fixes for d79bf21 and 0ad58af (MPS pGT duplicate poses, NaN counts as worse in `benchmark_compare`); LaMAria on `/mnt/c` | 7982490 |
+| 2026-10-17 | 3 | Observability check of the linearization (`msckf_observability`, gate `stage3_observability` PASS): FEJ keeps the 4 unobservable directions | c40cf69 |
+| 2026-10-17 | 3 | Review fixes: the observability gate uses the filter's own transitions (`Phi_last`), no-FEJ control | 0c04edf |
+| 2026-10-17 | 3 | MSCKF on real data (`msckf_run`, gate `stage3_real`: EuRoC MH_01–05, TUM-VI room1, LaMAria R_01–03); max_clones sweep (11 kept); shared `sequences.py` | c9d4771 |
+| 2026-10-18 | 3 | Review fixes: IMU feeding for slow IMUs, per-run failures in `stage3_real`, FEJ and no-FEJ both reported (no-FEJ 3–5× better on EuRoC); OpenVINS docs comparison | c40dd0e |
 
-### Handover (2026-10-12)
+### Handover (2026-10-18)
 
-Read this, then the Stage 1b section, before continuing. The latest commit is 6d006eb; the working tree was clean at handover, apart from this plan update and the untracked `.clang-format` / `.clang-tidy`.
+Read this, then the Stage 3 section, before continuing. The latest commit is c40dd0e; the working tree is clean apart from this plan update and the maintainer's own edits (`CLAUDE.md`, `scripts/data/fetch_lamaria.sh`).
 
 **Where things stand:**
 - **Stage 0:** complete.
 - **Stage 1a (static init):** gate PASS.
 - **Stage 1b (dynamic init, sqrtVINS paper):** gate PASS on the retry pipeline, which tries static, then in place, then dynamic.
 - **Stage 1 tracker gate:** FAIL, deferred by the user. It fails on repeating-pattern aliasing (checkerboard, AprilGrid) and on large motion without prediction.
+- **Stage 3 (MSCKF):** runs on simulation (`stage3_sim`: handheld consistent; fast rotation and cart overconfident with FEJ) and real data (`stage3_real`: TUM-VI room1 5.8–8.9 cm, LaMAria R_01–03 0.19–0.91 m ATE; EuRoC MH 0.29–2.6 m without FEJ, 0.96–15.4 m with FEJ). FEJ is the top open problem (Priority item 0); `stage3_observability` PASS.
 - **Stage 3 equation audit (2026-10-17):** nine deviations from the plan artifact, listed in Stage 3 "Equation audit"; open ones are the error-state order, the missing ESKF reset Jacobian, non-FEJ extrinsic and bias Jacobians, and short tracks dropped at marginalization. Triangulation now uses anchored inverse depth (user decision, 2026-10-17).
 - **Stage 1's full milestone:** the success criterion "VIO ATE over the next 10 s" needs the Stage 3 filter. Init results are judged on the hand-off state until then.
-- **Benchmarks:** latest full run `~/benchmark/2026-10-12_004139` (commit 6d006eb, after both review-fix commits) against `2026-10-11_230242` (c911ab7): 0 regressions, 0 degraded. FAILs, all known: `stage1_tracker` (deferred), `basalt_flow_check` (0.156 / 0.131 % unmatched points vs 0.1 %, room1), `stage3_sim` (first run, now its baseline; same numbers as Stage 3 "Progress"). `tracker_compare` timings 3–23 % faster for every tracker, Basalt included: machine load, not code.
+- **Benchmarks:** latest run `~/benchmark/2026-10-17_231755` (the c40dd0e changes, staged) against `2026-10-17_223929` (c9d4771): 0 regressions, 0 degraded; 175/175 unit tests. FAILs, all known: `stage3_sim` (handheld extrinsic translation 3.1 mm vs 1 mm; fast rotation FEJ NEES in band 84 % / 0.6 % of epochs vs 90 %), `stage3_real` (EuRoC MH_01 with FEJ). Not rerun since 2026-10-12: `stage1_tracker` (FAIL, deferred), `basalt_flow_check` (FAIL, 0.156 / 0.131 % vs 0.1 %).
 
 **The user's working rules** (also in `~/.claude/CLAUDE.md` and the repo's `CLAUDE.md`):
 - **Git:** never `git commit` or `git push` (nor amend, rebase, tag or force-push). Stage, then propose a commit message ending with the Co-Authored-By line. The user commits and pushes.
@@ -49,12 +59,15 @@ Read this, then the Stage 1b section, before continuing. The latest commit is 6d
 - **Plan:** keep this plan updated at every milestone, with decisions and measured numbers.
 
 **How to run:**
-- Build and test: `cmake --build build -j8`, then `cd build && ctest` (136 tests). There is no sudo; dependencies come through FetchContent.
+- Build and test: `cmake --build build -j8`, then `cd build && ctest` (175 tests). There is no sudo; dependencies come through FetchContent.
 - Gates: `scripts/run_gates.sh`, or a single gate as `python python/msckf_gates/stage1b_dynamic_init.py`, which writes `gate_out/<gate>/report.md`.
 - Benchmarks: `scripts/run_benchmarks.sh` (see above).
 - Init tools:
   - `build/dynamic_init_eval euroc|sim …` (options in its header comment: `--restart`, `--refine`, `--triplets`, `--sim-pixel-noise`, …).
   - `python python/play_init.py room1 [--cam cam1] [--t0 0]`: plays init attempts with gravity plumb lines and speed.
+- Filter tools:
+  - `build/msckf_run --euroc DIR --tracks tracks.csv --out DIR …` (real data; options in its header comment: `--bias gt`, `--clones`, `--no-fej`); `stage3_real` runs it on every sequence with the cached Stage 1b tracks.
+  - `build/msckf_sim_eval` (Monte Carlo NEES, `stage3_sim`), `build/msckf_observability` (`stage3_observability`).
 - Front-end tools:
   - `build/tracker_eval` (modes: tracks, tartanair, …; `--tracker basalt`);
   - `python/play_tracks.py` (TUM-VI, TartanAir gross errors);
@@ -67,6 +80,8 @@ Read this, then the Stage 1b section, before continuing. The latest commit is 6d
   - `featureless_init`: the paper's linear solve, keyframes, least-squares covariance, and the optional triplet equations.
   - `init_refinement`: Gauss-Newton with landmarks and the joint covariance.
   - `dynamic_init`: the retry pipeline (static, in place, linear, refinement or linear hand-off, scale gate).
+- Filter, in `include/msckf/filter/` and `src/filter/`: `filter_state` (state, clones with first estimates), `propagator` (RK4 mean, FEJ transition), `feature_update` (anchored inverse depth linearization, nullspace, χ², QR, Joseph), `msckf` (the window), `observability`, `sim_run`.
+- Real-data sequences shared by the gates: `python/msckf_gates/sequences.py`.
 - Front end: `include/msckf/vision/basalt_flow.h` and `src/vision/basalt_flow.cpp`, the vendored Basalt flow (BSD notice).
 - Simulator: `src/sim/`, with scenarios handheld, cart (boustrophedon with push surges and stops), fast_rotation and car.
 
@@ -246,6 +261,28 @@ Simulator gate: noiseless IMU integrated over 60 s matches the spline to < 1e-6 
 
 - The gate uses exact IMU readings at RK4's midpoints, from the continuous-time model. Fast rotation (peak 6.3 rad/s) runs the gate at 800 Hz: at 400 Hz it lands at 1.07e-6 m, purely from RK4 step size. A separate test confirms 4th-order convergence (error ratio 16.0 per halving of the step) in every scenario.
 - Noted for Stage 3: with discrete samples only, linearly interpolated midpoints cost 5 mm (handheld) to 15 cm (fast rotation) over 60 s noiseless. That's far below IMU noise, but it's the propagation floor.
+
+**User's simulator plan (2026-10-18, `C:/Users/user/Downloads/vio_simulator_plan.md`), compared with `src/sim/`:**
+
+| Simulator plan item | Here | Gap |
+| --- | --- | --- |
+| Analytic 3D Lissajous path (figure-8 preset, 1:2:3 with wobble) in a figure frame F, constant R_WF tilts it | Spline scenarios only (handheld, cart, fast_rotation, car) | New scenario. Fits the spline interface if sampled into control poses, but then it is no longer exact: better a `Trajectory` interface with an analytic implementation |
+| Attitude R_FI = R_head · R_off (off / planar / 3D tangent heading, sinusoidal offsets) | Per-scenario attitude in control poses | With the Lissajous scenario |
+| Time warp: static start, smootherstep ramp, optional ramp-down to a final stand-still | Cart has stops; no static start anywhere | Missing; needed for static-init and ZUPT tests (Stage 3 item 3) |
+| White noise σ/√dt, bias random walk σ√dt | Same | None |
+| Turn-on biases drawn per run (seeded) | `gyro_bias0` / `acc_bias0` fixed in the config | Missing |
+| Bias models: Gauss-Markov, deterministic drift, walk exaggeration factor | Random walk only | Missing (model-mismatch tests) |
+| Allan variance check of the noise generator (and of real IMU logs) | None | Missing; also gives filter noise for real IMUs (the ×4 inflation is tuned, not measured) |
+| Seeded independent sub-streams per noise source | One `mt19937_64` per run; the landmark seed is drawn after the IMU loop, so changing IMU rate or duration reshuffles the map | Missing |
+| Landmarks by ray-casting from the camera whenever fewer than N are visible | Ground, walls, ceiling, street corridor | Missing; trajectory-agnostic, keeps the feature count constant |
+| Pinhole first, fisheye later; 1 px noise; persistent ids | EuRoC radtan; any model fits; 1 px; ids | None |
+| CSV outputs (`imu.csv`, `features.csv`, `groundtruth.csv`, `config.yaml`) | In memory (`SimData`), consumed by the tools directly | Missing; only needed if data leaves the C++ tools |
+| Dead-reckoning and reprojection checks | Dead-reckoning gate (< 1e-6 m over 60 s) | Reprojection check missing (trivial) |
+| Init scenarios: static start, moving start, tilted figure, low excitation, pure rotation, window length | Stage 1b gate on handheld, cart, car; window length swept | Tilted figure, low excitation and pure rotation missing |
+| Phase 2: cumulative cubic B-spline on SE(3) from recorded ground truth (EuRoC, TUM-VI) | Split SO(3) × R³ cumulative cubic B-spline from synthetic control poses | Recorded-trajectory input missing; the split form is kept (exact world acceleration for the IMU, which the SE(3) form couples to rotation) |
+| Later: time offset, extrinsics, outlier tracks, fisheye | t_d and extrinsics simulated and estimated | Outlier tracks missing |
+
+Conflicts with this plan, kept as decided here: **Hamilton quaternions, not JPL** (Conventions); the simulator stays **C++ in `msckf`** (the filter, gates and NEES tools use `SimData` directly; a Python copy would duplicate the camera models). Proposed order, not started: (1) seeded sub-streams and turn-on biases; (2) time warp with static start and stop, (3) the analytic Lissajous scenario with R_WF, (4) Allan variance tool, (5) ray-cast landmarks, (6) spline from recorded ground truth, (7) the init scenarios, bias-mismatch models, outliers.
 
 ### Evaluation harness
 
