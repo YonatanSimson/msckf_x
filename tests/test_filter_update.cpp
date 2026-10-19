@@ -14,6 +14,8 @@
 
 #include <Eigen/Dense>
 
+#include <limits>
+
 namespace msckf::filter {
 namespace {
 
@@ -54,9 +56,12 @@ Fixture makeFixture(bool fej) {
     s.addClone(d.frames[f].t_cam, omega);
     for (const auto& o : d.frames[f].observations) ++seen[o.landmark_id];
   }
+  // The nearest landmark seen in all five: the best-conditioned triangulation.
   int64_t id = -1;
+  double nearest = std::numeric_limits<double>::infinity();
   for (const auto& [lid, n] : seen) {
-    if (n == 5) id = lid;
+    const double dist = (d.landmarks[lid].p_G - init.nav.p_GI).norm();
+    if (n == 5 && dist < nearest) id = lid, nearest = dist;
   }
   EXPECT_GE(id, 0);
   FeatureTrack tr;

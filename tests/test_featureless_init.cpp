@@ -15,6 +15,7 @@
 #include "msckf/init/init_refinement.h"
 #include "msckf/sim/scenarios.h"
 #include "msckf/sim/simulator.h"
+#include "msckf/sim/spline.h"
 
 #include <algorithm>
 #include <map>
@@ -143,7 +144,7 @@ TEST(FeaturelessInit, RefusesWindowWithoutAcceleration) {
   for (int k = 0; k < 40; ++k) {
     spline.addControlPose(Sophus::SO3d::rotZ(0.3), Eigen::Vector3d(0.5 * k * kKnotDt, 0.0, 1.5));
   }
-  const Simulator sim(c, spline, camera());
+  const Simulator sim(c, std::make_shared<SplineTrajectory>(spline), camera());
   const SimData data = sim.run();
   const Window w = makeWindow(sim, data, 1.0, 1.0, false);
   const FeaturelessInitResult r =

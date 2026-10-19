@@ -10,6 +10,7 @@
 #include "msckf/init/static_init.h"
 #include "msckf/sim/scenarios.h"
 #include "msckf/sim/simulator.h"
+#include "msckf/sim/spline.h"
 
 #include <Eigen/Cholesky>
 
@@ -28,12 +29,12 @@ CameraModelPtr camera() {
 }
 
 // A spline that holds one pose for its whole range.
-SplineTrajectory staticTrajectory(const Sophus::SO3d& R_GI, double duration) {
+TrajectoryPtr staticTrajectory(const Sophus::SO3d& R_GI, double duration) {
   constexpr double kKnotDt = 0.1;
   SplineTrajectory spline(0.0, kKnotDt);
   const int n = static_cast<int>(std::ceil(duration / kKnotDt)) + 4;
   for (int k = 0; k < n; ++k) spline.addControlPose(R_GI, Eigen::Vector3d(1.0, 2.0, 1.5));
-  return spline;
+  return std::make_shared<SplineTrajectory>(spline);
 }
 
 SimConfig imuOnlyConfig(double duration, uint64_t seed) {

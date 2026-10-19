@@ -1,7 +1,10 @@
 #include "msckf/sim/scenarios.h"
 
 #include "msckf/camera/pinhole_radtan.h"
+#include "msckf/sim/lissajous.h"
 #include "msckf/sim/simulator.h"
+#include "msckf/sim/spline.h"
+#include "msckf/sim/time_warp.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +15,9 @@
 namespace msckf {
 
 namespace {
+
+constexpr double kFigure8Static = 2.0;  // s at rest before the figure-8
+constexpr double kFigure8Ramp = 2.0;    // s to reach full speed
 
 Sophus::SO3d fromRollPitchYaw(double roll, double pitch, double yaw) {
   return Sophus::SO3d::rotZ(yaw) * Sophus::SO3d::rotY(pitch) * Sophus::SO3d::rotX(roll);
@@ -277,6 +283,7 @@ std::string toString(Scenario scenario) {
     case Scenario::kCart: return "cart";
     case Scenario::kFastRotation: return "fast-rotation";
     case Scenario::kCar: return "car";
+    case Scenario::kFigure8: return "figure8";
   }
   return "unknown";
 }
@@ -286,6 +293,7 @@ Scenario parseScenario(const std::string& name) {
   if (name == "cart") return Scenario::kCart;
   if (name == "fast_rotation") return Scenario::kFastRotation;
   if (name == "car") return Scenario::kCar;
+  if (name == "figure8") return Scenario::kFigure8;
   throw std::invalid_argument("unknown scenario " + name);
 }
 
@@ -297,6 +305,10 @@ CameraModelPtr simulatedCamera() {
 
 SimConfig defaultSimConfig(Scenario scenario) {
   SimConfig config;
+  if (scenario == Scenario::kFigure8) {
+    config.gyro_turn_on_sigma = 0.01;  // rad/s, ~0.6 deg/s
+    config.acc_turn_on_sigma = 0.05;   // m/s^2
+  }
   if (scenario == Scenario::kCart) {
     config.ground_density = 1.0;
     config.wall_density = 1.0;
@@ -318,12 +330,16 @@ SimConfig defaultSimConfig(Scenario scenario) {
   return config;
 }
 
-SplineTrajectory makeScenario(Scenario scenario, double duration, uint64_t seed) {
+TrajectoryPtr makeScenario(Scenario scenario, double duration, uint64_t seed) {
   switch (scenario) {
-    case Scenario::kHandheld: return makeHandheld(duration, seed);
-    case Scenario::kCart: return makeCart(duration, seed);
-    case Scenario::kFastRotation: return makeFastRotation(duration, seed);
-    case Scenario::kCar: return makeCar(duration, seed);
+    case Scenario::kHandheld: return std::make_shared<SplineTrajectory>(makeHandheld(duration, seed));
+    case Scenario::kCart: return std::make_shared<SplineTrajectory>(makeCart(duration, seed));
+    case Scenario::kFastRotation: return std::make_shared<SplineTrajectory>(makeFastRotation(duration, seed));
+    case Scenario::kCar: return std::make_shared<SplineTrajectory>(makeCar(duration, seed));
+    case Scenario::kFigure8: {
+      auto figure8 = std::make_shared<LissajousTrajectory>(LissajousConfig{}, duration);
+      return std::make_shared<TimeWarpedTrajectory>(figure8, kFigure8Static, kFigure8Ramp);
+    }
   }
   throw std::invalid_argument("unknown scenario");
 }

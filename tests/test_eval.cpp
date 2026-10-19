@@ -19,11 +19,11 @@ namespace fs = std::filesystem;
 
 // Ground truth sampled from a simulator trajectory.
 Trajectory sampleScenario(Scenario scenario, double duration, double rate) {
-  const SplineTrajectory spline = makeScenario(scenario, duration + 1.0, 9);
+  const TrajectoryPtr spline = makeScenario(scenario, duration + 1.0, 9);
   Trajectory out;
   for (int k = 0; k <= static_cast<int>(duration * rate); ++k) {
     const double t = k / rate;
-    const SplineState s = spline.evaluate(t);
+    const TrajectoryState s = spline->evaluate(t);
     out.push_back({t, Sophus::SE3d(s.R_GI, s.p_GI)});
   }
   return out;
@@ -140,10 +140,10 @@ TEST(RelativeError, ScaleAndRotationDrift) {
 }
 
 TEST(Trajectory, InterpolationAndAssociation) {
-  const SplineTrajectory spline = makeScenario(Scenario::kHandheld, 11.0, 9);
+  const TrajectoryPtr spline = makeScenario(Scenario::kHandheld, 11.0, 9);
   Trajectory gt;
   for (int k = 0; k <= 2000; ++k) {  // 200 Hz ground truth
-    const SplineState s = spline.evaluate(k / 200.0);
+    const TrajectoryState s = spline->evaluate(k / 200.0);
     gt.push_back({k / 200.0, Sophus::SE3d(s.R_GI, s.p_GI)});
   }
   double max_p = 0.0, max_r = 0.0;
@@ -151,7 +151,7 @@ TEST(Trajectory, InterpolationAndAssociation) {
   for (double t = 0.0013; t < 10.0; t += 0.0497) {  // off-grid estimate times
     Sophus::SE3d T;
     ASSERT_TRUE(interpolatePose(gt, t, 0.01, T));
-    const SplineState s = spline.evaluate(t);
+    const TrajectoryState s = spline->evaluate(t);
     max_p = std::max(max_p, (T.translation() - s.p_GI).norm());
     max_r = std::max(max_r, (s.R_GI.inverse() * T.so3()).log().norm());
     est.push_back({t, T});

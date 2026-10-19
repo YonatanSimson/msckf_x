@@ -12,6 +12,7 @@ dependencies = [
   "opencv-python>=4.7",  # GUI build (Qt) so viz.py can open windows; needs cv2.aruco.ArucoDetector
   "matplotlib>=3.7",
   "pyyaml>=6",
+  "rerun-sdk==0.33.0",  # play_sim.py; the version projectaria-tools pins
 ]
 
 [project.optional-dependencies]
@@ -31,11 +32,12 @@ tracker-sweep = "tracker_sweep:main"
 tracker-compare = "tracker_compare:main"
 benchmark-compare = "benchmark_compare:main"
 play-tracks = "play_tracks:main"
+play-sim = "play_sim:main"
 tune-init-noise = "tune_init_noise:main"
 kitti-raw-to-euroc = "kitti_raw_to_euroc:main"
 
 [tool.setuptools]
-py-modules = ["viz", "play_euroc", "tracker_sweep", "tracker_compare", "benchmark_compare", "play_tracks", "basalt_flow_check", "tune_init_noise", "kitti_raw_to_euroc"]
+py-modules = ["viz", "play_euroc", "tracker_sweep", "tracker_compare", "benchmark_compare", "play_tracks", "play_sim", "basalt_flow_check", "tune_init_noise", "kitti_raw_to_euroc"]
 packages = ["msckf_gates"]
 
 [tool.black]

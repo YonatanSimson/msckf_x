@@ -706,14 +706,16 @@ int runSim(const Args& a) {
     sim_args.still_noise_px = c.pixel_noise;
     const double max_retry = DynamicInitConfig{}.max_window;
     for (double t0 = 0.5; t0 + max_retry < c.duration - 0.5; t0 += a.segment) {
+      // Biases known: the truth at t0 (turn-on bias plus walk).
+      const GroundTruth& g0 = data.imu_truth[static_cast<size_t>(std::lround(t0 * c.imu_rate))];
       for (double w : a.windows) {
         const std::vector<InitFrame> win = windowFrames(all, t0, w);
         if (win.size() < 2) continue;
-        evaluateWindow(log, seq, t0, w, data.imu, win, T_IC, c.gyro_bias0, c.acc_bias0, c.imu_noise, bearing_sigma,
+        evaluateWindow(log, seq, t0, w, data.imu, win, T_IC, g0.gyro_bias, g0.acc_bias, c.imu_noise, bearing_sigma,
                        truth_for, lin_cfg, a.linear_covariance_scale);
         ++runs;
       }
-      evaluateRetry(log, nullptr, seq, t0, t0, data.imu, all, T_IC, c.gyro_bias0, c.acc_bias0, c.imu_noise,
+      evaluateRetry(log, nullptr, seq, t0, t0, data.imu, all, T_IC, g0.gyro_bias, g0.acc_bias, c.imu_noise,
                     bearing_sigma, fx, truth_for, {}, lin_cfg, sim_args);
     }
   }

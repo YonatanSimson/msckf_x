@@ -2,7 +2,7 @@
 
 #include "msckf/camera/camera_model.h"
 #include "msckf/imu/imu_types.h"
-#include "msckf/sim/spline.h"
+#include "msckf/sim/trajectory.h"
 
 #include <cstdint>
 #include <random>
@@ -29,6 +29,9 @@ struct SimConfig {
   bool imu_noise_enabled = true;
   Eigen::Vector3d gyro_bias0 = Eigen::Vector3d::Zero();
   Eigen::Vector3d acc_bias0 = Eigen::Vector3d::Zero();
+  // Turn-on biases: per run, N(0, sigma^2) per axis added to the biases above.
+  double gyro_turn_on_sigma = 0.0;  // rad/s
+  double acc_turn_on_sigma = 0.0;   // m/s^2
 
   // Camera pose in the IMU frame.
   Sophus::SO3d R_IC = forwardCameraRotation(15.0 * M_PI / 180.0);
@@ -55,6 +58,9 @@ struct SimConfig {
   double corridor_height = 8.0;   // m
   double corridor_road = 8.0;     // m, half-width of the road band
 
+  // Every random value comes from this seed, in an independent stream per
+  // source (IMU noise, bias walks, turn-on biases, landmarks, pixel noise), so
+  // changing one source (e.g. landmark density) leaves the others unchanged.
   uint64_t seed = 1;
 };
 
@@ -91,10 +97,10 @@ struct SimData {
 
 class Simulator {
  public:
-  Simulator(const SimConfig& config, SplineTrajectory trajectory, CameraModelPtr camera);
+  Simulator(const SimConfig& config, TrajectoryPtr trajectory, CameraModelPtr camera);
 
   const SimConfig& config() const { return config_; }
-  const SplineTrajectory& trajectory() const { return trajectory_; }
+  const Trajectory& trajectory() const { return *trajectory_; }
   const CameraModel& camera() const { return *camera_; }
 
   // Exact, noise- and bias-free IMU reading at any time in the trajectory range.
@@ -107,12 +113,14 @@ class Simulator {
   SimData run() const;
 
  private:
-  std::vector<Landmark> makeLandmarks(uint64_t seed) const;
+  void simulateImu(SimData& data) const;
+  std::vector<Landmark> makeLandmarks() const;
+  void addStreetCorridor(std::vector<Landmark>& out, std::mt19937_64& rng) const;
   CameraFrame renderFrame(double t_cam, const std::vector<Landmark>& landmarks,
                           std::mt19937_64& rng) const;
 
   SimConfig config_;
-  SplineTrajectory trajectory_;
+  TrajectoryPtr trajectory_;
   CameraModelPtr camera_;
 };
 

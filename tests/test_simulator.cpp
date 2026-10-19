@@ -10,6 +10,8 @@
 #include "msckf/imu/propagation.h"
 #include "msckf/sim/scenarios.h"
 #include "msckf/sim/simulator.h"
+#include "msckf/sim/spline.h"
+#include "trajectory_checks.h"
 
 #include <sophus/se3.hpp>
 
@@ -36,46 +38,31 @@ CameraModelPtr eurocPinhole() {
 
 class SimulatorTest : public ::testing::TestWithParam<Scenario> {
  protected:
-  SplineTrajectory makeTrajectory(double duration = kGateDuration) {
+  TrajectoryPtr makeTrajectory(double duration = kGateDuration) {
     return makeScenario(GetParam(), duration + 1.0, 3);
   }
 };
 
-TEST_P(SimulatorTest, SplineDerivativesMatchFiniteDifferences) {
-  const SplineTrajectory traj = makeTrajectory();
-  std::mt19937 rng(5);
-  std::uniform_real_distribution<double> time(traj.minTime() + 0.01, traj.maxTime() - 0.01);
-  constexpr double h = 1e-5;
-  double max_v = 0, max_a = 0, max_w = 0, max_alpha = 0;
-  for (int i = 0; i < 2000; ++i) {
-    const double t = time(rng);
-    const SplineState s = traj.evaluate(t);
-    const SplineState sp = traj.evaluate(t + h), sm = traj.evaluate(t - h);
-    const Eigen::Vector3d v_fd = (sp.p_GI - sm.p_GI) / (2 * h);
-    const Eigen::Vector3d a_fd = (sp.v_GI - sm.v_GI) / (2 * h);
-    // Body rate: R(t + h) = R(t - h) Exp(2 h w) to second order.
-    const Eigen::Vector3d w_fd = (sm.R_GI.inverse() * sp.R_GI).log() / (2 * h);
-    const Eigen::Vector3d alpha_fd = (sp.omega_I - sm.omega_I) / (2 * h);
-    max_v = std::max(max_v, (s.v_GI - v_fd).norm() / (1.0 + s.v_GI.norm()));
-    max_a = std::max(max_a, (s.a_GI - a_fd).norm() / (1.0 + s.a_GI.norm()));
-    max_w = std::max(max_w, (s.omega_I - w_fd).norm() / (1.0 + s.omega_I.norm()));
-    max_alpha = std::max(max_alpha, (s.alpha_I - alpha_fd).norm() / (1.0 + s.alpha_I.norm()));
-  }
-  std::cout << "[ info ] max rel. error v " << max_v << ", a " << max_a << ", omega " << max_w
-            << ", alpha " << max_alpha << "\n";
-  EXPECT_LT(max_v, 1e-7);
-  EXPECT_LT(max_a, 1e-7);
-  EXPECT_LT(max_w, 1e-7);
-  EXPECT_LT(max_alpha, 1e-6);
+TEST_P(SimulatorTest, TrajectoryDerivativesMatchFiniteDifferences) {
+  const DerivativeErrors e = derivativeErrors(*makeTrajectory());
+  std::cout << "[ info ] max rel. error v " << e.v << ", a " << e.a << ", omega " << e.omega << ", alpha "
+            << e.alpha << "\n";
+  EXPECT_LT(e.v, 1e-7);
+  EXPECT_LT(e.a, 1e-7);
+  EXPECT_LT(e.omega, 1e-7);
+  EXPECT_LT(e.alpha, 1e-6);
 }
 
-TEST_P(SimulatorTest, SplineIsC2AcrossKnots) {
-  const SplineTrajectory traj = makeTrajectory();
-  const double dt = traj.knotInterval();
+// Spline knots; for the figure-8 every 0.1 s, which includes both ends of the
+// time warp's ramp (2 s and 4 s).
+TEST_P(SimulatorTest, TrajectoryIsC2AcrossKnots) {
+  const TrajectoryPtr traj = makeTrajectory();
+  const auto* spline = dynamic_cast<const SplineTrajectory*>(traj.get());
+  const double dt = spline ? spline->knotInterval() : 0.1;
   constexpr double eps = 1e-9;
   double max_jump = 0.0;
-  for (double t = traj.minTime() + dt; t < traj.maxTime() - dt; t += dt) {
-    const SplineState a = traj.evaluate(t - eps), b = traj.evaluate(t + eps);
+  for (double t = traj->minTime() + dt; t < traj->maxTime() - dt; t += dt) {
+    const TrajectoryState a = traj->evaluate(t - eps), b = traj->evaluate(t + eps);
     max_jump = std::max({max_jump, (a.p_GI - b.p_GI).norm(), (a.v_GI - b.v_GI).norm(),
                          (a.a_GI - b.a_GI).norm(), (a.omega_I - b.omega_I).norm(),
                          (a.alpha_I - b.alpha_I).norm(),
@@ -223,12 +210,12 @@ TEST_P(SimulatorTest, CameraObservationsMatchIndependentProjection) {
 }
 
 TEST(SimulatorScenarios, CartIsPlanarWithExactStops) {  // and pushed: speed surges while moving
-  const SplineTrajectory traj = makeScenario(Scenario::kCart, 120.0, 3);
+  const TrajectoryPtr traj = makeScenario(Scenario::kCart, 120.0, 3);
   double max_speed = 0.0, max_dz = 0.0, stopped_time = 0.0;
   bool exact_stop_found = false;
   constexpr double step = 0.01;
-  for (double t = traj.minTime(); t <= traj.maxTime(); t += step) {
-    const SplineState s = traj.evaluate(t);
+  for (double t = traj->minTime(); t <= traj->maxTime(); t += step) {
+    const TrajectoryState s = traj->evaluate(t);
     max_speed = std::max(max_speed, s.v_GI.norm());
     max_dz = std::max(max_dz, std::abs(s.p_GI.z() - 0.8));
     if (s.v_GI.norm() < 1e-12 && s.omega_I.norm() < 1e-12 && s.a_GI.norm() < 1e-12) {
@@ -237,7 +224,7 @@ TEST(SimulatorScenarios, CartIsPlanarWithExactStops) {  // and pushed: speed sur
     }
   }
   std::cout << "[ info ] cart: max speed " << max_speed << " m/s, max |dz| " << max_dz
-            << " m, exactly stationary " << stopped_time << " s of " << traj.maxTime() << " s\n";
+            << " m, exactly stationary " << stopped_time << " s of " << traj->maxTime() << " s\n";
   EXPECT_TRUE(exact_stop_found);
   // Cruise 1 m/s plus push surges of +-0.15 m/s.
   EXPECT_NEAR(max_speed, 1.15, 0.05);
@@ -245,10 +232,10 @@ TEST(SimulatorScenarios, CartIsPlanarWithExactStops) {  // and pushed: speed sur
 }
 
 TEST(SimulatorScenarios, FastRotationReachesHighRates) {
-  const SplineTrajectory traj = makeScenario(Scenario::kFastRotation, 60.0, 3);
+  const TrajectoryPtr traj = makeScenario(Scenario::kFastRotation, 60.0, 3);
   double max_rate = 0.0;
-  for (double t = traj.minTime(); t <= traj.maxTime(); t += 0.005) {
-    max_rate = std::max(max_rate, traj.evaluate(t).omega_I.norm());
+  for (double t = traj->minTime(); t <= traj->maxTime(); t += 0.005) {
+    max_rate = std::max(max_rate, traj->evaluate(t).omega_I.norm());
   }
   std::cout << "[ info ] fast rotation: peak rate " << max_rate << " rad/s\n";
   EXPECT_GT(max_rate, 4.0);
@@ -256,7 +243,7 @@ TEST(SimulatorScenarios, FastRotationReachesHighRates) {
 
 INSTANTIATE_TEST_SUITE_P(AllScenarios, SimulatorTest,
                          ::testing::Values(Scenario::kHandheld, Scenario::kCart,
-                                           Scenario::kFastRotation),
+                                           Scenario::kFastRotation, Scenario::kFigure8),
                          [](const auto& info) {
                            std::string name = toString(info.param);
                            name.erase(std::remove(name.begin(), name.end(), '-'), name.end());

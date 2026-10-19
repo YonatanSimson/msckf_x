@@ -27,7 +27,7 @@ void SplineTrajectory::addControlPose(const Sophus::SO3d& R_GI, const Eigen::Vec
   positions_.push_back(p_GI);
 }
 
-SplineState SplineTrajectory::evaluate(double t) const {
+TrajectoryState SplineTrajectory::evaluate(double t) const {
   const int n = numControlPoses();
   if (n < 4) throw std::logic_error("SplineTrajectory: need at least 4 control poses");
   if (t < minTime() - 1e-12 || t > maxTime() + 1e-12) {
@@ -43,7 +43,7 @@ SplineState SplineTrajectory::evaluate(double t) const {
   const Eigen::Vector4d dB = C * Eigen::Vector4d(0.0, 1.0, 2.0 * u, 3.0 * u * u) / dt_;
   const Eigen::Vector4d ddB = C * Eigen::Vector4d(0.0, 0.0, 2.0, 6.0 * u) / (dt_ * dt_);
 
-  SplineState out;
+  TrajectoryState out;
   out.p_GI = positions_[i];
   out.v_GI.setZero();
   out.a_GI.setZero();

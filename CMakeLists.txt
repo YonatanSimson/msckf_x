@@ -41,9 +41,11 @@ add_library(msckf
   src/init/dynamic_init.cpp
   src/init/static_init.cpp
   src/io/euroc.cpp
+  src/sim/lissajous.cpp
   src/sim/scenarios.cpp
   src/sim/simulator.cpp
   src/sim/spline.cpp
+  src/sim/time_warp.cpp
 )
 target_include_directories(msckf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(msckf PUBLIC Eigen3::Eigen sophus)
@@ -51,6 +53,9 @@ target_compile_options(msckf PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(msckf_eval tools/msckf_eval.cpp)
 target_link_libraries(msckf_eval PRIVATE msckf)
+
+add_executable(sim_export tools/sim_export.cpp)
+target_link_libraries(sim_export PRIVATE msckf)
 
 add_executable(msckf_sim_eval tools/msckf_sim_eval.cpp)
 target_link_libraries(msckf_sim_eval PRIVATE msckf)
