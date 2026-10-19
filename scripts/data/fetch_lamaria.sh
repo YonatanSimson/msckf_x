@@ -2,22 +2,27 @@
 # Downloads LaMAria (ETH/Meta, Project Aria glasses) training sequences in the
 # ASL/EuRoC export (undistorted pinhole stereo + IMU), together with their
 # pinhole calibration, pseudo-dense ground truth and control points.
+# With -r, also the original Aria recordings (fisheye VRS, ~124 GB in all) and
+# their Aria calibration (camera model FISHEYE624, RAD_TAN_THIN_PRISM_FISHEYE).
 #
-#   scripts/data/fetch_lamaria.sh [-d DEST] [SEQUENCE...]
+#   scripts/data/fetch_lamaria.sh [-d DEST] [-r] [SEQUENCE...]
 #
 # SEQUENCE is a training sequence name, e.g. R_01_easy, R_08_hard,
 # sequence_1_19. Default: all training sequences (~170 GB).
 # DEST defaults to $MSCKF_DATA_LARGE/lamaria, with MSCKF_DATA_LARGE defaulting
 # to /mnt/c/Users/user/data.
 # Layout: DEST/training/SEQ/{aria/{cam0,cam1,imu0},pinhole_calibrations,
-# ground_truth/{pGT,control_points}}. Sequences already extracted are skipped.
+# ground_truth/{pGT,control_points},aria_calibrations,raw/SEQ.vrs}.
+# Sequences already extracted, and recordings already complete, are skipped.
 set -euo pipefail
 
 dest="${MSCKF_DATA_LARGE:-/mnt/c/Users/user/data}/lamaria"
-while getopts "d:h" opt; do
+raw=0
+while getopts "d:rh" opt; do
   case "$opt" in
     d) dest="$OPTARG" ;;
-    h) sed -n '2,13p' "$0"; exit 0 ;;
+    r) raw=1 ;;
+    h) sed -n '2,16p' "$0"; exit 0 ;;
     *) exit 2 ;;
   esac
 done
@@ -63,6 +68,35 @@ remote_size() {
   curl -fsSIL "$1" | tr -d '\r' | awk 'tolower($1)=="content-length:" {n=$2} END {print n}'
 }
 
+# Downloads $1 to $2, resuming a partial download, and checks its size
+# against the server's.
+download() {
+  echo "${2##*/}: downloading"
+  curl -fSL --progress-bar -C - -o "$2" "$1"
+  local want have
+  want=$(remote_size "$1")
+  have=$(stat -c %s "$2")
+  if [ -z "$want" ]; then
+    echo "${2##*/}: server sent no size, size check skipped" >&2
+  elif [ "$want" != "$have" ]; then
+    echo "${2##*/}: size mismatch ($have != $want)" >&2
+    exit 1
+  fi
+}
+
+# The original Aria recording, kept as downloaded (.part until complete).
+fetch_recording() {
+  local s=$1 vrs="$dest/training/$1/raw/$1.vrs"
+  fetch_optional "$base/aria_calibrations/training/$s.json" "$dest/training/$s/aria_calibrations/$s.json"
+  if [ -f "$vrs" ]; then
+    echo "$s.vrs: already present"
+    return
+  fi
+  mkdir -p "${vrs%/*}"
+  download "$base/raw_data/training/$s.vrs" "$vrs.part"
+  mv "$vrs.part" "$vrs"
+}
+
 fetch_sequence() {
   local s=$1 dir="$dest/training/$1"
   fetch_optional "$base/pinhole_calibrations/training/$s.json" "$dir/pinhole_calibrations/$s.json"
@@ -72,19 +106,9 @@ fetch_sequence() {
     echo "$s: already present"
     return
   fi
-  local url="$base/asl_folder/training/$s.zip" zip="$dest/.download/$s.zip"
+  local zip="$dest/.download/$s.zip"
   mkdir -p "$dest/.download"
-  echo "$s: downloading"
-  curl -fSL --progress-bar -C - -o "$zip" "$url"
-  local want have
-  want=$(remote_size "$url")
-  have=$(stat -c %s "$zip")
-  if [ -z "$want" ]; then
-    echo "$s: server sent no size, size check skipped" >&2
-  elif [ "$want" != "$have" ]; then
-    echo "$s: size mismatch ($have != $want)" >&2
-    exit 1
-  fi
+  download "$base/asl_folder/training/$s.zip" "$zip"
   unzip -q -o "$zip" -d "$dest/training"
   touch "$dir/.extracted"
   rm -f "$zip"
@@ -97,5 +121,6 @@ sequences=("$@")
 
 for s in "${sequences[@]}"; do
   fetch_sequence "$s"
+  if [ "$raw" = 1 ]; then fetch_recording "$s"; fi
 done
 rmdir "$dest/.download" 2>/dev/null || true
